@@ -1,0 +1,1 @@
+CC=arm-cx2450x-linux-gnueabi-gcc ./configure  --target=arm-cx2450x-linux-gnueabi -prefix=/opt/newcross/arm-cx2450x-linux-gnueabi/arm-cx2450x-linux-gnueabi/sys-root/usr --without-svgalib --without-x --without-directfb --without-libtiff --enable-graphics --enable-javascript
