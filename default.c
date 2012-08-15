@@ -7,31 +7,42 @@
 
 #include "links.h"
 
+unsigned char system_name[MAX_STR_LEN];
+
 static void get_system_name(void)
 {
-#if defined(HAVE_SYS_UTSNAME_H) && defined(HAVE_UNAME)
-	struct utsname name;
-	memset(&name, 0, sizeof name);
-	if (!uname(&name)) {
-		unsigned char *str = init_str();
-		int l = 0;
-		add_to_str(&str, &l, name.sysname);
-		add_to_str(&str, &l, " ");
-		add_to_str(&str, &l, name.release);
-		add_to_str(&str, &l, " ");
-		add_to_str(&str, &l, name.machine);
-		if (l >= MAX_STR_LEN) str[MAX_STR_LEN - 1] = 0;
-		strcpy(system_name, str);
-		mem_free(str);
+#ifdef OS2
+	if (!os_get_system_name(system_name))
 		return;
+#endif
+#if defined(HAVE_SYS_UTSNAME_H) && defined(HAVE_UNAME)
+	{
+		struct utsname name;
+		int rs;
+		memset(&name, 0, sizeof name);
+		EINTRLOOP(rs, uname(&name));
+		if (!rs) {
+			unsigned char *str = init_str();
+			int l = 0;
+			add_to_str(&str, &l, cast_uchar name.sysname);
+			add_to_str(&str, &l, cast_uchar " ");
+			add_to_str(&str, &l, cast_uchar name.release);
+			add_to_str(&str, &l, cast_uchar " ");
+			add_to_str(&str, &l, cast_uchar name.machine);
+			if (l >= MAX_STR_LEN) str[MAX_STR_LEN - 1] = 0;
+			strcpy(cast_char system_name, cast_const_char str);
+			mem_free(str);
+			return;
+		}
 	}
 #endif
 #ifdef HAVE_POPEN
-	{
+	if (0) {
 		FILE *f;
 		unsigned char *p;
 		memset(system_name, 0, MAX_STR_LEN);
-		if (!(f = popen("uname -srm", "r"))) goto fail;
+		ENULLLOOP(f, popen("uname -srm", "r"));
+		if (!f) goto fail;
 		if (fread(system_name, 1, MAX_STR_LEN - 1, f) <= 0) {
 			pclose(f);
 			goto fail;
@@ -45,7 +56,329 @@ static void get_system_name(void)
 	}
 	fail:
 #endif
-	strcpy(system_name, SYSTEM_NAME);
+	strcpy(cast_char system_name, SYSTEM_NAME);
+}
+
+unsigned char compiler_name[MAX_STR_LEN];
+
+static void get_compiler_name(void)
+{
+#if defined(__BORLANDC__)
+
+	int w = __BORLANDC__+0;
+	int v1 = w / 0x100;
+	int v2 = w / 0x10 % 0x10;
+	int v3 = w % 0x10;
+	if (v1 == 4 && v2 < 5) v1 = 3;
+	if (v1 == 4 && v2 == 5) v2 = 0;
+
+	if (!v3) sprintf(cast_char compiler_name, "Borland C %d.%d", v1, v2);
+	else sprintf(cast_char compiler_name, "Borland C %d.%d.%d", v1, v2, v3);
+
+#elif defined(__clang__)
+
+#if !defined(__clang_major__) || !defined(__clang_minor__)
+	sprintf(cast_char compiler_name, "LLVM/Clang");
+#else
+	int v1 = __clang_major__+0;
+	int v2 = __clang_minor__+0;
+#ifdef __clang_patchlevel__
+	int v3 = __clang_patchlevel__+0;
+#else
+	int v3 = 0;
+#endif
+	if (v3 > 0) sprintf(cast_char compiler_name, "LLVM/Clang %d.%d.%d", v1, v2, v3);
+	else sprintf(cast_char compiler_name, "LLVM/Clang %d.%d", v1, v2);
+#endif
+
+#elif defined(__COMO_VERSION__)
+
+	int w = __COMO_VERSION__+0;
+	int v1 = w / 100;
+	int v2 = w % 100;
+	if (!(v2 % 10)) sprintf(cast_char compiler_name, "Comeau C %d.%d", v1, v2 / 10);
+	else sprintf(cast_char compiler_name, "Comeau C %d.%02d", v1, v2);
+
+#elif defined(__convexc__)
+
+	sprintf(cast_char compiler_name, "Convex C");
+
+#elif defined(_CRAYC)
+
+#if !defined(_RELEASE) || !defined(_RELEASE_MINOR)
+	sprintf(cast_char compiler_name, "Cray C");
+#else
+	int v1 = _RELEASE+0;
+	int v2 = _RELEASE_MINOR+0;
+	sprintf(cast_char compiler_name, "Cray C %d.%d", v1, v2);
+#endif
+
+#elif defined(__DCC__)
+
+#ifndef __VERSION_NUMBER__
+	sprintf(cast_char compiler_name, "Diab C");
+#else
+	int w = __VERSION_NUMBER__+0;
+	int v1 = w / 1000;
+	int v2 = w / 100 % 10;
+	int v3 = w % 100;
+	sprintf(cast_char compiler_name, "Diab C %d.%d.%02d", v1, v2, v3);
+#endif
+
+#elif defined(__DMC__)
+
+	int w = __DMC__+0;
+	int v1 = w / 0x100;
+	int v2 = w / 0x10 % 0x10;
+	int v3 = w % 0x10;
+	if (!v3) sprintf(cast_char compiler_name, "Digital Mars C %d.%d", v1, v2);
+	else sprintf(cast_char compiler_name, "Digital Mars C %d.%d.%d", v1, v2, v3);
+
+#elif defined(__DECC_VER)
+
+	int w = __DECC_VER+0;
+	int v1 = w / 10000000;
+	int v2 = w / 100000 % 100;
+	int v3 = w % 10000;
+	if (!(v2 % 10)) sprintf(cast_char compiler_name, "DEC C %d.%d-%d", v1, v2 / 10, v3);
+	else sprintf(cast_char compiler_name, "DEC C %d.%02d-%d", v1, v2, v3);
+
+#elif defined(__ghs__)
+
+#ifndef __GHS_VERSION_NUMBER__
+	sprintf(cast_char compiler_name, "Green Hill C");
+#else
+	int w = __GHS_VERSION_NUMBER__+0;
+	int v1 = w / 100;
+	int v2 = w / 10 % 10;
+	int v3 = w % 10;
+	sprintf(cast_char compiler_name, "Green Hill C %d.%d.%d", v1, v2, v3);
+#endif
+
+#elif defined(__HIGHC__)
+
+	sprintf(cast_char compiler_name, "MetaWare High C");
+
+#elif defined(__HP_cc)
+
+	int w = __HP_cc+0;
+	int v1 = w / 10000;
+	int v2 = w / 100 % 100;
+	int v3 = w % 100;
+	if (w <= 1) sprintf(cast_char compiler_name, "HP CC");
+	else sprintf(cast_char compiler_name, "HP CC %d.%02d.%02d", v1, v2, v3);
+
+#elif defined(__xlc__)
+
+	int w = __xlc__+0;
+	int v1 = w / 0x100;
+	int v2 = w % 0x100;
+	sprintf(cast_char compiler_name, "IBM XL C %X.%X", v1, v2);
+
+#elif defined(__IBMC__) && defined(__COMPILER_VER__)
+
+	unsigned w = __COMPILER_VER__+0;
+	int v0 = w / 0x10000000;
+	int v1 = w / 0x1000000 % 0x10;
+	int v2 = w / 0x10000 % 0x100;
+	int v3 = w % 0x10000;
+	unsigned char *os = !v0 ? "S/370" : v0 == 1 ? "OS/390" : v0 == 4 ? "z/OS" : "";
+	sprintf(cast_char compiler_name, "IBM%s%s XL C %X.%0X.%X", *os ? " " : "", os, v1, v2, v3);
+
+#elif defined(__ICC)
+
+	int w = __ICC+0;
+	int v1 = w / 100;
+	int v2 = w % 100;
+	if (!(v2 % 10)) sprintf(cast_char compiler_name, "Intel C %d.%d", v1, v2 / 10);
+	else sprintf(cast_char compiler_name, "Intel C %d.%02d", v1, v2);
+
+#elif defined(__LCC__)
+
+	sprintf(cast_char compiler_name, "LCC");
+
+#elif defined(__NDPC__)
+
+	sprintf(cast_char compiler_name, "Microway NDP C");
+
+#elif defined(_MSC_VER)
+
+	int w = _MSC_VER+0;
+	int v1 = w / 100;
+	int v2 = w % 100;
+	unsigned char *visual = cast_uchar "";
+	if (v1 >= 8) {
+		v1 -= 6;
+		if (v1 == 2) v1 = 1;
+		visual = cast_uchar "Visual ";
+	}
+	if (!(v2 % 10)) sprintf(cast_char compiler_name, "Microsoft %sC %d.%d", visual, v1, v2 / 10);
+	else sprintf(cast_char compiler_name, "Microsoft %sC %d.%02d", visual, v1, v2);
+
+#elif defined(__MWERKS__)
+
+	int w = __MWERKS__+0;
+	int v1 = w / 0x1000;
+	int v2 = w / 0x100 % 0x10;
+	int v3 = w % 0x100;
+	if (w <= 1) sprintf(cast_char compiler_name, "Metrowerks CodeWarrior");
+	sprintf(cast_char compiler_name, "Metrowerks CodeWarrior %x.%x.%x", v1, v2, v3);
+
+#elif defined(__NWCC__)
+
+	sprintf(cast_char compiler_name, "NWCC");
+
+#elif defined(__OPEN64__)
+
+	unsigned char *n = cast_uchar "Open64 " __OPEN64__;
+	if (strlen(cast_const_char n) >= sizeof(cast_char compiler_name)) n = cast_uchar "Open64";
+	strcpy(cast_char compiler_name, cast_const_char n);
+
+#elif defined(__PATHSCALE__)
+
+	unsigned char *n = cast_uchar "PathScale " __PATHSCALE__;
+	if (strlen(cast_const_char n) >= sizeof(cast_char compiler_name)) n = cast_uchar "PathScale";
+	strcpy(cast_char compiler_name, cast_const_char n);
+
+#elif defined(__PCC__)
+
+	int v1 = __PCC__+0;
+#ifdef __PCC_MINOR__
+	int v2 = __PCC_MINOR__+0;
+#else
+	int v2 = 0;
+#endif
+#ifdef __PCC_MINORMINOR__
+	int v3 = __PCC_MINORMINOR__+0;
+#else
+	int v3 = 0;
+#endif
+	sprintf(cast_char compiler_name, "PCC %d.%d.%d", v1, v2, v3);
+
+#elif defined(__PGI) || defined(__PGIC__)
+
+#if !defined(__PGIC__) || !defined(__PGIC_MINOR__)
+	sprintf(cast_char compiler_name, "The Portland Group C");
+#else
+	int v1 = __PGIC__+0;
+	int v2 = __PGIC_MINOR__+0;
+#ifdef __PGIC_PATCHLEVEL__
+	int v3 = __PGIC_PATCHLEVEL__+0;
+#else
+	int v3 = 0;
+#endif
+	if (v3 > 0) sprintf(cast_char compiler_name, "The Portland Group C %d.%d.%d", v1, v2, v3);
+	else sprintf(cast_char compiler_name, "The Portland Group C %d.%d", v1, v2);
+#endif
+
+#elif defined(__SASC__)
+
+	int w = __SASC__+0;
+	int v1 = w / 100;
+	int v2 = w % 100;
+	sprintf(cast_char compiler_name, "SAS C %d.%02d", v1, v2);
+
+#elif (defined(__sgi) && defined(_COMPILER_VERSION)) || defined(_SGI_COMPILER_VERSION)
+
+#ifdef _SGI_COMPILER_VERSION
+	int w = _SGI_COMPILER_VERSION;
+#else
+	int w = _COMPILER_VERSION;
+#endif
+	int v1 = w / 100;
+	int v2 = w / 10 % 10;
+	int v3 = w % 10;
+	sprintf(cast_char compiler_name, "MIPSpro %d.%d.%d", v1, v2, v3);
+
+#elif defined(__SUNPRO_C)
+
+	int w = __SUNPRO_C+0;
+	int div = w >= 0x1000 ? 0x1000 : 0x100;
+	int v2_digits = w >= 0x1000 ? 2 : 1;
+	int v1 = w / div;
+	int v2 = w % div / 0x10;
+	int v3 = w % 0x10;
+	if (!v3) sprintf(cast_char compiler_name, "Sun C %X.%0*X", v1, v2_digits, v2);
+	else sprintf(cast_char compiler_name, "Sun C %X.%0*X.%X", v1, v2_digits, v2, v3);
+
+#elif defined(__SYSC__) && defined(__SYSC_VER__)
+
+	int w = __SYSC_VER__+0;
+	int v1 = w / 10000;
+	int v2 = w / 100 % 100;
+	int v3 = w % 100;
+	sprintf(cast_char compiler_name, "Dignus Systems C %d.%02d.%02d", v1, v2, v3);
+
+#elif defined(__TenDRA__)
+
+	sprintf(cast_char compiler_name, "TenDRA C");
+
+#elif defined(__TINYC__)
+
+	sprintf(cast_char compiler_name, "Tiny C");
+
+#elif defined(_UCC)
+
+#if !defined(_MAJOR_REV) || !defined(_MINOR_REV)
+	sprintf(cast_char compiler_name, "Ultimate C");
+#else
+	int v1 = _MAJOR_REV+0;
+	int v2 = _MAJOR_REV+0;
+	sprintf(cast_char compiler_name, "Ultimate C %d.%d", v1, v2);
+#endif
+
+#elif defined(__USLC__)
+
+	sprintf(cast_char compiler_name, "USL C");
+
+#elif defined(__VAXC)
+
+	sprintf(cast_char compiler_name, "VAX C");
+
+#elif defined(__VOSC__)
+
+	sprintf(cast_char compiler_name, "Stratus VOS C");
+
+#elif defined(__WATCOMC__)
+
+	int w = __WATCOMC__+0;
+	int v1 = w / 100;
+	int v2 = w % 100;
+	unsigned char *op = cast_uchar "";
+	if (v1 >= 12) {
+		v1 -= 11;
+		op = cast_uchar "Open";
+	}
+	if (!(v2 % 10)) sprintf(cast_char compiler_name, "%sWatcom C %d.%d", op, v1, v2 / 10);
+	else sprintf(cast_char compiler_name, "%sWatcom C %d.%02d", op, v1, v2);
+
+#elif defined(__GNUC__)
+
+	int v1 = __GNUC__+0;
+#ifdef __GNUC_MINOR__
+	int v2 = __GNUC_MINOR__+0;
+#else
+	int v2 = 0;
+#endif
+#ifdef __GNUC_PATCHLEVEL__
+	int v3 = __GNUC_PATCHLEVEL__+0;
+#else
+	int v3 = 0;
+#endif
+#if defined(__llvm__)
+	unsigned char *prefix = cast_uchar "LLVM/";
+#else
+	unsigned char *prefix = cast_uchar "";
+#endif
+	if (v1 == 2 && (v2 >= 90 && v2 <= 91)) sprintf(cast_char compiler_name, "%sEGCS 1.%d", prefix, v2 - 90);
+	else if (v3 > 0) sprintf(cast_char compiler_name, "%sGNU C %d.%d.%d", prefix, v1, v2, v3);
+	else sprintf(cast_char compiler_name, "%sGNU C %d.%d", prefix, v1, v2);
+
+#else
+
+	strcpy(cast_char compiler_name, "unknown compiler");
+
+#endif
 }
 
 struct option {
@@ -55,8 +388,8 @@ struct option {
 	void (*wr_cfg)(struct option *, unsigned char **, int *);
 	int min, max;	/* for double min and max are in 1/100's (e.g. 0.1 is min==10) */
 	void *ptr;
-	unsigned char *cfg_name;
-	unsigned char *cmd_name;
+	char *cfg_name;
+	char *cmd_name;
 };
 
 static unsigned char *p_arse_options(int argc, unsigned char *argv[], struct option **opt)
@@ -70,7 +403,7 @@ static unsigned char *p_arse_options(int argc, unsigned char *argv[], struct opt
 			struct option **op;
 			for (op = opt; (options = *op); op++) for (i = 0; options[i].p; i++)
 				if (options[i].rd_cmd && options[i].cmd_name &&
-				    !strcasecmp(options[i].cmd_name, &argv[-1][1])) {
+				    !strcasecmp(cast_const_char options[i].cmd_name, cast_const_char &argv[-1][1])) {
 					if ((e = options[i].rd_cmd(&options[i], &argv, &argc))) {
 						if (e[0]) fprintf(stderr, "Error parsing option %s: %s\n", argv[-1], e);
 						return NULL;
@@ -79,7 +412,7 @@ static unsigned char *p_arse_options(int argc, unsigned char *argv[], struct opt
 				}
 			uu:
 #ifdef GRDRV_DIRECTFB
-                        if (!strncmp(argv[-1], "--dfb:", 6))
+                        if (!strncmp(cast_const_char argv[-1], "--dfb:", 6))
                                 goto found;
 #endif
 			fprintf(stderr, "Unknown option %s\n", argv[-1]);
@@ -89,7 +422,7 @@ static unsigned char *p_arse_options(int argc, unsigned char *argv[], struct opt
 		found:;
 	}
 	if (u) return u;
-	return "";
+	return cast_uchar "";
 }
 
 static unsigned char *get_token(unsigned char **line)
@@ -98,7 +431,7 @@ static unsigned char *get_token(unsigned char **line)
 	int l = 0;
 	int escape = 0;
 	int quote = 0;
-	
+
 	while (**line == ' ' || **line == 9) (*line)++;
 	if (**line) {
 		for (s = init_str(); **line; (*line)++) {
@@ -107,7 +440,7 @@ static unsigned char *get_token(unsigned char **line)
 			else if (**line == '\\') {
 				escape = 1;
 				continue;
-			}	
+			}
 			else if (**line == '"') {
 				quote = !quote;
 				continue;
@@ -152,9 +485,9 @@ static void parse_config_file(unsigned char *name, unsigned char *file, struct o
 		tok = NULL;
 		if (n[0] == '#') goto f;
 		if (!(tok = get_token(&n))) goto f;
-		nl = strlen(tok);
+		nl = strlen(cast_const_char tok);
 		for (op = opt; (options = *op); op++)
-			for (i = 0; options[i].p; i++) if (options[i].cfg_name && (size_t)nl == strlen(options[i].cfg_name) && !casecmp(tok, options[i].cfg_name, nl)) {
+			for (i = 0; options[i].p; i++) if (options[i].cfg_name && (size_t)nl == strlen(cast_const_char options[i].cfg_name) && !casecmp(tok, cast_uchar options[i].cfg_name, nl)) {
 				unsigned char *o = memacpy(p, pl);
 				if ((e = options[i].rd_cfg(&options[i], o))) {
 					if (e[0]) fprintf(stderr, "Error parsing config file %s, line %d: %s\n", name, line, e), err = 1;
@@ -175,10 +508,10 @@ static unsigned char *create_config_string(struct option *options)
 	unsigned char *s = init_str();
 	int l = 0;
 	int i;
-	add_to_str(&s, &l, "# This file is automatically generated by Links -- please do not edit.");
+	add_to_str(&s, &l, cast_uchar "# This file is automatically generated by Links -- please do not edit.");
 	for (i = 0; options[i].p; i++) if (options[i].wr_cfg)
 		options[i].wr_cfg(&options[i], &s, &l);
-	add_to_str(&s, &l, NEWLINE);
+	add_to_str(&s, &l, cast_uchar NEWLINE);
 	return s;
 }
 
@@ -191,16 +524,18 @@ unsigned char *read_config_file(unsigned char *name)
 	int h, r;
 	int l = 0;
 	unsigned char *s;
-	if ((h = open(name, O_RDONLY | O_NOCTTY)) == -1) return NULL;
+	int rs;
+	EINTRLOOP(h, open(cast_const_char name, O_RDONLY | O_NOCTTY));
+	if (h == -1) return NULL;
 	set_bin(h);
 	s = init_str();
-	while ((r = read(h, cfg_buffer, FILE_BUF)) > 0) {
+	while ((r = hard_read(h, cfg_buffer, FILE_BUF)) > 0) {
 		int i;
 		for (i = 0; i < r; i++) if (!cfg_buffer[i]) cfg_buffer[i] = ' ';
 		add_bytes_to_str(&s, &l, cfg_buffer, r);
 	}
 	if (r == -1) mem_free(s), s = NULL;
-	close(h);
+	EINTRLOOP(rs, close(h));
 	return s;
 }
 
@@ -209,35 +544,47 @@ int write_to_config_file(unsigned char *name, unsigned char *c)
 	int rr;
 	int r;
 	int h, w;
-	unsigned char *tmp_name = stracpy(name);
-	unsigned char *ds, *dt, *dot;
-	for (dt = ds = tmp_name; *dt; dt++) if (dir_sep(*dt)) ds = dt;
-	if ((dot = strchr(ds, '.'))) *dot = 0;
-	add_to_strn(&tmp_name, ".tmp");
-	if ((h = open(tmp_name, O_WRONLY | O_NOCTTY | O_CREAT | O_TRUNC, 0666)) == -1) {
+	int count = 0;
+	int tmp_namel;
+	unsigned char *tmp_name;
+	int rs;
+try_new_count:
+	tmp_namel = 0;
+	tmp_name = init_str();
+	add_to_str(&tmp_name, &tmp_namel, name);
+	add_to_str(&tmp_name, &tmp_namel, cast_uchar ".tmp.");
+	add_num_to_str(&tmp_name, &tmp_namel, count);
+	EINTRLOOP(h, open(cast_const_char tmp_name, O_WRONLY | O_NOCTTY | O_CREAT | O_TRUNC | O_EXCL, 0600));
+	if (h == -1) {
+		if (errno == EEXIST && count < MAXINT) {
+			count++;
+			mem_free(tmp_name);
+			goto try_new_count;
+		}
 		mem_free(tmp_name);
 		return get_error_from_errno(errno);
 	}
 	set_bin(h);
-	rr = strlen(c);
+	rr = strlen(cast_const_char c);
 	r = rr;
 	while (r > 0) {
-		if ((w = write(h, c + rr - r, r)) <= 0) {
+		if ((w = hard_write(h, c + rr - r, r)) <= 0) {
 			int err = !w ? ENOSPC : errno;
-			close(h);
-			unlink(tmp_name);
+			EINTRLOOP(rs, close(h));
+			EINTRLOOP(rs, unlink(cast_const_char tmp_name));
 			mem_free(tmp_name);
 			return get_error_from_errno(err);
 		}
 		r -= w;
 	}
-	close(h);
+	EINTRLOOP(rs, close(h));
 #ifndef RENAME_OVER_EXISTING_FILES
-	unlink(name);
+	EINTRLOOP(rs, unlink(cast_const_char name));
 #endif
-	if (rename(tmp_name, name)) {
+	EINTRLOOP(rs, rename(cast_const_char tmp_name, cast_const_char name));
+	if (rs) {
 		int err = errno;
-		unlink(tmp_name);
+		EINTRLOOP(rs, unlink(cast_const_char tmp_name));
 		mem_free(tmp_name);
 		return get_error_from_errno(err);
 	}
@@ -248,14 +595,15 @@ int write_to_config_file(unsigned char *name, unsigned char *c)
 static unsigned char *get_home(int *n)
 {
 	struct stat st;
+	int rs;
 	unsigned char *home = NULL;
 	unsigned char *home_links;
-	unsigned char *config_dir = stracpy(getenv("CONFIG_DIR"));
+	unsigned char *config_dir = stracpy(cast_uchar getenv("CONFIG_DIR"));
 
 	if (n) *n = 1;
 #ifdef WIN32
 	if (!home) {
-		home = stracpy(getenv("APPDATA"));
+		home = stracpy(cast_uchar getenv("APPDATA"));
 #ifdef HAVE_CYGWIN_CONV_PATH
 		/*
 		 * Newer Cygwin complains about windows-style path, so
@@ -277,17 +625,20 @@ static unsigned char *get_home(int *n)
 skip_path_conv:;
 		}
 #endif
-		if (home && (stat(home, &st) == -1 || !S_ISDIR(st.st_mode))) {
-			mem_free(home);
-			home = NULL;
+		if (home) {
+			EINTRLOOP(rs, stat(cast_const_char home, &st));
+			if (rs || !S_ISDIR(st.st_mode)) {
+				mem_free(home);
+				home = NULL;
+			}
 		}
 	}
 #endif
-	if (!home) home = stracpy("/var/tuxbox/config");
+	if (!home) home =  stracpy("/var/tuxbox/config");
 #ifdef WIN32
 /* When we run in Cygwin without Cygwin environment, it reports home "/".
    Unfortunatelly, it can't write anything to that directory */
-	if (home && !strcmp(home, "/")) {
+	if (home && !strcmp(cast_const_char home, "/")) {
 		mem_free(home);
 		home = NULL;
 	}
@@ -299,34 +650,37 @@ skip_path_conv:;
 			if (config_dir) mem_free(config_dir);
 			return NULL;
 		}
-		for (i = strlen(home) - 1; i >= 0; i--) if (dir_sep(home[i])) {
+		for (i = strlen(cast_const_char home) - 1; i >= 0; i--) if (dir_sep(home[i])) {
 			home[i + 1] = 0;
 			goto br;
 		}
 		home[0] = 0;
 		br:;
 	}
-	while (home[0] && dir_sep(home[strlen(home) - 1])) home[strlen(home) - 1] = 0;
-	if (home[0]) add_to_strn(&home, "/");
+	while (home[0] && dir_sep(home[strlen(cast_const_char home) - 1])) home[strlen(cast_const_char home) - 1] = 0;
+	if (home[0]) add_to_strn(&home, cast_uchar "/");
 	home_links = stracpy(home);
 	if (config_dir)
 	{
 		add_to_strn(&home_links, config_dir);
-		while (home_links[0] && dir_sep(home_links[strlen(home_links) - 1])) home_links[strlen(home_links) - 1] = 0;
-		if (stat(home_links, &st) != -1 && S_ISDIR(st.st_mode)) {
-			add_to_strn(&home_links, "/links");
+		while (home_links[0] && dir_sep(home_links[strlen(cast_const_char home_links) - 1])) home_links[strlen(cast_const_char home_links) - 1] = 0;
+		EINTRLOOP(rs, stat(cast_const_char home_links, &st));
+		if (!rs && S_ISDIR(st.st_mode)) {
+			add_to_strn(&home_links, cast_uchar "/links");
 		} else {
 			fprintf(stderr, "CONFIG_DIR set to %s. But directory %s doesn't exist.\n\007", config_dir, home_links);
 			sleep(3);
 			mem_free(home_links);
 			home_links = stracpy(home);
-			add_to_strn(&home_links, "links");		
+			add_to_strn(&home_links, cast_uchar "links");
 		}
 		mem_free(config_dir);
-	} else add_to_strn(&home_links, "links");
-	if (stat(home_links, &st)) {
+	} else add_to_strn(&home_links, cast_uchar "links");
+	EINTRLOOP(rs, stat(cast_const_char home_links, &st));
+	if (rs) {
 #ifdef HAVE_MKDIR
-		if (!mkdir(home_links, 0777)) goto home_creat;
+		EINTRLOOP(rs, mkdir(cast_const_char home_links, 0700));
+		if (!rs) goto home_creat;
 #endif
 		if (config_dir) goto failed;
 		goto first_failed;
@@ -335,14 +689,19 @@ skip_path_conv:;
 	/* This is a Cygwin hack! Cygwin reports stat for "links" if no
 	   "links" exists and only "links.exe" does. So try to create directory
 	   anyway. */
-	if (!mkdir(home_links, 0777)) goto home_creat;
+#ifdef HAVE_MKDIR
+	EINTRLOOP(rs, mkdir(cast_const_char home_links, 0700));
+	if (!rs) goto home_creat;
+#endif
 	first_failed:
 	mem_free(home_links);
 	home_links = stracpy(home);
-	add_to_strn(&home_links, "links");
-	if (stat(home_links, &st)) {
+	add_to_strn(&home_links, cast_uchar "links");
+	EINTRLOOP(rs, stat(cast_const_char home_links, &st));
+	if (rs) {
 #ifdef HAVE_MKDIR
-		if (!mkdir(home_links, 0777)) goto home_creat;
+		EINTRLOOP(rs, mkdir(cast_const_char home_links, 0700));
+		if (!rs) goto home_creat;
 #else
 		mem_free(home_links);
 		home_links = stracpy(home);
@@ -351,7 +710,10 @@ skip_path_conv:;
 		goto failed;
 	}
 	if (S_ISDIR(st.st_mode)) goto home_ok;
-	if (!mkdir(home_links, 0777)) goto home_creat;
+#ifdef HAVE_MKDIR
+	EINTRLOOP(rs, mkdir(cast_const_char home_links, 0700));
+	if (!rs) goto home_creat;
+#endif
 	failed:
 	mem_free(home_links);
 	mem_free(home);
@@ -361,9 +723,9 @@ skip_path_conv:;
 	if (n) *n = 0;
 	home_creat:
 #ifdef HAVE_CHMOD
-	chmod(home_links, 0700);
+	EINTRLOOP(rs, chmod(cast_const_char home_links, 0700));
 #endif
-	add_to_strn(&home_links, "/");
+	add_to_strn(&home_links, cast_uchar "/");
 	mem_free(home);
 	return home_links;
 }
@@ -371,6 +733,7 @@ skip_path_conv:;
 void init_home(void)
 {
 	get_system_name();
+	get_compiler_name();
 	links_home = get_home(&first_use);
 	if (!links_home) {
 		fprintf(stderr, "Unable to find or create links config directory. Please check, that you have $HOME variable set correctly and that you have write permission to your home directory.\n\007");
@@ -394,7 +757,7 @@ static int write_config_data(unsigned char *prefix, unsigned char *name, struct 
 	}
 	add_to_strn(&config_file, name);
 	if ((err = write_to_config_file(config_file, c))) {
-		if (term) msg_box(term, NULL, TEXT_(T_CONFIG_ERROR), AL_CENTER | AL_EXTD_TEXT, TEXT_(T_UNABLE_TO_WRITE_TO_CONFIG_FILE), ": ", get_err_msg(err), NULL, NULL, 1, TEXT_(T_CANCEL), NULL, B_ENTER | B_ESC);
+		if (term) msg_box(term, NULL, TEXT_(T_CONFIG_ERROR), AL_CENTER | AL_EXTD_TEXT, TEXT_(T_UNABLE_TO_WRITE_TO_CONFIG_FILE), cast_uchar ": ", get_err_msg(err), NULL, NULL, 1, TEXT_(T_CANCEL), NULL, B_ENTER | B_ESC);
 		mem_free(c);
 		mem_free(config_file);
 		return -1;
@@ -406,9 +769,9 @@ static int write_config_data(unsigned char *prefix, unsigned char *name, struct 
 
 static void add_nm(struct option *o, unsigned char **s, int *l)
 {
-	if (*l) add_to_str(s, l, NEWLINE);
-	add_to_str(s, l, o->cfg_name);
-	add_to_str(s, l, " ");
+	if (*l) add_to_str(s, l, cast_uchar NEWLINE);
+	add_to_str(s, l, cast_uchar o->cfg_name);
+	add_to_str(s, l, cast_uchar " ");
 }
 
 static void add_quoted_to_str(unsigned char **s, int *l, unsigned char *q)
@@ -427,15 +790,15 @@ static unsigned char *num_rd(struct option *o, unsigned char *c)
 	unsigned char *tok = get_token(&c);
 	unsigned char *end;
 	long l;
-	if (!tok) return "Missing argument";
+	if (!tok) return cast_uchar "Missing argument";
 	l = strtolx(tok, &end);
 	if (*end) {
 		mem_free(tok);
-		return "Number expected";
+		return cast_uchar "Number expected";
 	}
 	if (l < o->min || l > o->max) {
 		mem_free(tok);
-		return "Out of range";
+		return cast_uchar "Out of range";
 	}
 	*(int *)o->ptr = l;
 	mem_free(tok);
@@ -451,19 +814,19 @@ static void num_wr(struct option *o, unsigned char **s, int *l)
 static unsigned char *dbl_rd(struct option *o, unsigned char *c)
 {
 	unsigned char *tok = get_token(&c);
-	char *end;
+	unsigned char *end;
 	double d;
-	
-	if (!tok) return "Missing argument";
-	d = strtod(tok, &end);
+
+	if (!tok) return cast_uchar "Missing argument";
+	d = strtod(cast_const_char tok, (char **)(void *)&end);
 
 	if (*end) {
 		mem_free(tok);
-		return "Number expected";
+		return cast_uchar "Number expected";
 	}
 	if (100*d < o->min || 100*d > o->max) {
 		mem_free(tok);
-		return "Out of range";
+		return cast_uchar "Out of range";
 	}
 	*(double *)o->ptr = d;
 	mem_free(tok);
@@ -472,8 +835,8 @@ static unsigned char *dbl_rd(struct option *o, unsigned char *c)
 
 static void dbl_wr(struct option *o, unsigned char **s, int *l)
 {
-	char number[80];
-	snprintf(number, sizeof number, "%.4f", *(double*)o->ptr);
+	unsigned char number[80];
+	snprintf(cast_char number, sizeof number, "%.4f", *(double*)o->ptr);
 
 	add_nm(o, s, l);
 	add_to_str(s, l, number);
@@ -484,8 +847,8 @@ static unsigned char *str_rd(struct option *o, unsigned char *c)
 	unsigned char *tok = get_token(&c);
 	unsigned char *e = NULL;
 	if (!tok) return NULL;
-	if (strlen(tok) + 1 > (size_t)o->max) e = "String too long";
-	else strcpy(o->ptr, tok);
+	if (strlen(cast_const_char tok) + 1 > (size_t)o->max) e = cast_uchar "String too long";
+	else strcpy(cast_char o->ptr, cast_const_char tok);
 	mem_free(tok);
 	return e;
 }
@@ -493,7 +856,7 @@ static unsigned char *str_rd(struct option *o, unsigned char *c)
 static void str_wr(struct option *o, unsigned char **s, int *l)
 {
 	add_nm(o, s, l);
-	if (strlen(o->ptr) + 1 > (size_t)o->max) {
+	if (strlen(cast_const_char o->ptr) + 1 > (size_t)o->max) {
 		unsigned char *s1 = init_str();
 		int l1 = 0;
 		add_bytes_to_str(&s1, &l1, o->ptr, o->max - 1);
@@ -508,9 +871,11 @@ static unsigned char *cp_rd(struct option *o, unsigned char *c)
 	unsigned char *tok = get_token(&c);
 	unsigned char *e = NULL;
 	int i;
-	if (!tok) return "Missing argument";
-	if ((i = get_cp_index(tok)) == -1) e = "Unknown codepage";
-	else if (o->min == 1 && is_cp_special(i)) e = "UTF-8 can't be here";
+	if (!tok) return cast_uchar "Missing argument";
+	if ((i = get_cp_index(tok)) == -1) e = cast_uchar "Unknown codepage";
+#ifndef ENABLE_UTF8
+	else if (o->min == 1 && i == utf8_table) e = cast_uchar "UTF-8 can't be here";
+#endif
 	else *(int *)o->ptr = i;
 	mem_free(tok);
 	return e;
@@ -527,15 +892,15 @@ static unsigned char *lang_rd(struct option *o, unsigned char *c)
 {
 	int i;
 	unsigned char *tok = get_token(&c);
-	if (!tok) return "Missing argument";
+	if (!tok) return cast_uchar "Missing argument";
 	for (i = 0; i < n_languages(); i++)
-		if (!(strcasecmp(language_name(i), tok))) {
+		if (!(strcasecmp(cast_const_char language_name(i), cast_const_char tok))) {
 			set_language(i);
 			mem_free(tok);
 			return NULL;
 		}
 	mem_free(tok);
-	return "Unknown language";
+	return cast_uchar "Unknown language";
 }
 
 static void lang_wr(struct option *o, unsigned char **s, int *l)
@@ -547,7 +912,7 @@ static void lang_wr(struct option *o, unsigned char **s, int *l)
 static int getnum(unsigned char *s, int *n, int r1, int r2)
 {
 	unsigned char *e;
-	long l = strtol(s, (char **)(void *)&e, 10);
+	long l = strtol(cast_const_char s, (char **)(void *)&e, 10);
 	if (*e || !*s) return -1;
 	if (l < r1 || l >= r2) return -1;
 	*n = (int)l;
@@ -556,7 +921,7 @@ static int getnum(unsigned char *s, int *n, int r1, int r2)
 
 static unsigned char *type_rd(struct option *o, unsigned char *c)
 {
-	unsigned char *err = "Error reading association specification";
+	unsigned char *err = cast_uchar "Error reading association specification";
 	struct assoc new;
 	unsigned char *w;
 	int n = 0;	/* against warning */
@@ -575,7 +940,7 @@ static unsigned char *type_rd(struct option *o, unsigned char *c)
 	new.accept_http = !!(n & 32);
 	new.accept_ftp = !!(n & 64);
 	if (!(w = get_token(&c))) goto err;
-	if (strlen(w) != 1 || w[0] < '0' || w[0] > '9') goto err_f;
+	if (strlen(cast_const_char w) != 1 || w[0] < '0' || w[0] > '9') goto err_f;
 	new.system = w[0] - '0';
 	mem_free(w);
 	update_assoc(&new);
@@ -592,13 +957,13 @@ static unsigned char *type_rd(struct option *o, unsigned char *c)
 
 static unsigned char *block_rd(struct option *o, unsigned char *c)
 {
-	unsigned char *err = "Error reading image block specification";
+	unsigned char *err = cast_uchar "Error reading image block specification";
 	unsigned char* url;
 
 	if(!(url = get_token(&c)))
 		return err;
-	
-	block_add_URL_fn(NULL, url);
+
+	block_url_add(NULL, url);
 
 	mem_free(url);
 
@@ -620,20 +985,20 @@ static void type_wr(struct option *o, unsigned char **s, int *l)
 	foreachback(a, assoc) {
 		add_nm(o, s, l);
 		add_quoted_to_str(s, l, a->label);
-		add_to_str(s, l, " ");
+		add_to_str(s, l, cast_uchar " ");
 		add_quoted_to_str(s, l, a->ct);
-		add_to_str(s, l, " ");
+		add_to_str(s, l, cast_uchar " ");
 		add_quoted_to_str(s, l, a->prog);
-		add_to_str(s, l, " ");
+		add_to_str(s, l, cast_uchar " ");
 		add_num_to_str(s, l, (!!a->cons) + (!!a->xwin) * 2 + (!!a->ask) * 4 + (!a->block) * 8 + (!!a->block) * 16 + (!!a->accept_http) * 32 + (!!a->accept_ftp) * 64);
-		add_to_str(s, l, " ");
+		add_to_str(s, l, cast_uchar " ");
 		add_num_to_str(s, l, a->system);
 	}
 }
 
 static unsigned char *ext_rd(struct option *o, unsigned char *c)
 {
-	unsigned char *err = "Error reading extension specification";
+	unsigned char *err = cast_uchar "Error reading extension specification";
 	struct extension new;
 	memset(&new, 0, sizeof(struct extension));
 	if (!(new.ext = get_token(&c))) goto err;
@@ -652,18 +1017,18 @@ static void ext_wr(struct option *o, unsigned char **s, int *l)
 	foreachback(a, extensions) {
 		add_nm(o, s, l);
 		add_quoted_to_str(s, l, a->ext);
-		add_to_str(s, l, " ");
+		add_to_str(s, l, cast_uchar " ");
 		add_quoted_to_str(s, l, a->ct);
 	}
 }
 
 static unsigned char *prog_rd(struct option *o, unsigned char *c)
 {
-	unsigned char *err = "Error reading program specification";
+	unsigned char *err = cast_uchar "Error reading program specification";
 	unsigned char *prog, *w;
 	if (!(prog = get_token(&c))) goto err_1;
 	if (!(w = get_token(&c))) goto err_2;
-	if (strlen(w) != 1 || w[0] < '0' || w[0] > '9') goto err_3;
+	if (strlen(cast_const_char w) != 1 || w[0] < '0' || w[0] > '9') goto err_3;
 	update_prog(o->ptr, prog, w[0] - '0');
 	err = NULL;
 	err_3:
@@ -681,7 +1046,7 @@ static void prog_wr(struct option *o, unsigned char **s, int *l)
 		if (!*a->prog) continue;
 		add_nm(o, s, l);
 		add_quoted_to_str(s, l, a->prog);
-		add_to_str(s, l, " ");
+		add_to_str(s, l, cast_uchar " ");
 		add_num_to_str(s, l, a->system);
 	}
 }
@@ -698,16 +1063,16 @@ static unsigned char *term_rd(struct option *o, unsigned char *c)
 	}
 	mem_free(w);
 	if (!(w = get_token(&c))) goto err;
-	if (strlen(w) != 1 || w[0] < '0' || w[0] > '4') goto err_f;
+	if (strlen(cast_const_char w) != 1 || w[0] < '0' || w[0] > '4') goto err_f;
 	ts->mode = w[0] - '0';
 	mem_free(w);
 	if (!(w = get_token(&c))) goto err;
-	if (strlen(w) != 1 || w[0] < '0' || w[0] > '3') goto err_f;
+	if (strlen(cast_const_char w) != 1 || w[0] < '0' || w[0] > '3') goto err_f;
 	ts->m11_hack = (w[0] - '0') & 1;
 	ts->braille = !!((w[0] - '0') & 2);
 	mem_free(w);
 	if (!(w = get_token(&c))) goto err;
-	if (strlen(w) != 1 || w[0] < '0' || w[0] > '7') goto err_f;
+	if (strlen(cast_const_char w) != 1 || w[0] < '0' || w[0] > '7') goto err_f;
 	ts->col = (w[0] - '0') & 1;
 	ts->restrict_852 = !!((w[0] - '0') & 2);
 	ts->block_cursor = !!((w[0] - '0') & 4);
@@ -715,7 +1080,7 @@ static unsigned char *term_rd(struct option *o, unsigned char *c)
 	if (!(w = get_token(&c))) goto err;
 	if ((i = get_cp_index(w)) == -1) goto err_f;
 #ifndef ENABLE_UTF8
-	if ((is_cp_special(i))) {
+	if (i == utf8_table) {
 		i = 0;
 	}
 #endif
@@ -726,7 +1091,7 @@ static unsigned char *term_rd(struct option *o, unsigned char *c)
 	err_f:
 	mem_free(w);
 	err:
-	return "Error reading terminal specification";
+	return cast_uchar "Error reading terminal specification";
 }
 
 static unsigned char *term2_rd(struct option *o, unsigned char *c)
@@ -741,25 +1106,25 @@ static unsigned char *term2_rd(struct option *o, unsigned char *c)
 	}
 	mem_free(w);
 	if (!(w = get_token(&c))) goto err;
-	if (strlen(w) != 1 || w[0] < '0' || w[0] > '3') goto err_f;
+	if (strlen(cast_const_char w) != 1 || w[0] < '0' || w[0] > '3') goto err_f;
 	ts->mode = w[0] - '0';
 	mem_free(w);
 	if (!(w = get_token(&c))) goto err;
-	if (strlen(w) != 1 || w[0] < '0' || w[0] > '1') goto err_f;
+	if (strlen(cast_const_char w) != 1 || w[0] < '0' || w[0] > '1') goto err_f;
 	ts->m11_hack = w[0] - '0';
 	mem_free(w);
 	if (!(w = get_token(&c))) goto err;
-	if (strlen(w) != 1 || w[0] < '0' || w[0] > '1') goto err_f;
+	if (strlen(cast_const_char w) != 1 || w[0] < '0' || w[0] > '1') goto err_f;
 	ts->restrict_852 = w[0] - '0';
 	mem_free(w);
 	if (!(w = get_token(&c))) goto err;
-	if (strlen(w) != 1 || w[0] < '0' || w[0] > '1') goto err_f;
+	if (strlen(cast_const_char w) != 1 || w[0] < '0' || w[0] > '1') goto err_f;
 	ts->col = w[0] - '0';
 	mem_free(w);
 	if (!(w = get_token(&c))) goto err;
 	if ((i = get_cp_index(w)) == -1) goto err_f;
 #ifndef ENABLE_UTF8
-	if ((is_cp_special(i))) {
+	if (i == utf8_table) {
 		i = 0;
 	}
 #endif
@@ -770,7 +1135,7 @@ static unsigned char *term2_rd(struct option *o, unsigned char *c)
 	err_f:
 	mem_free(w);
 	err:
-	return "Error reading terminal specification";
+	return cast_uchar "Error reading terminal specification";
 }
 
 static void term_wr(struct option *o, unsigned char **s, int *l)
@@ -779,13 +1144,13 @@ static void term_wr(struct option *o, unsigned char **s, int *l)
 	foreachback(ts, term_specs) {
 		add_nm(o, s, l);
 		add_quoted_to_str(s, l, ts->term);
-		add_to_str(s, l, " ");
+		add_to_str(s, l, cast_uchar " ");
 		add_num_to_str(s, l, ts->mode);
-		add_to_str(s, l, " ");
+		add_to_str(s, l, cast_uchar " ");
 		add_num_to_str(s, l, !!ts->m11_hack + !!ts->braille * 2);
-		add_to_str(s, l, " ");
+		add_to_str(s, l, cast_uchar " ");
 		add_num_to_str(s, l, !!ts->col + !!ts->restrict_852 * 2 + !!ts->block_cursor * 4);
-		add_to_str(s, l, " ");
+		add_to_str(s, l, cast_uchar " ");
 		add_to_str(s, l, get_cp_mime_name(ts->charset));
 	}
 }
@@ -795,10 +1160,10 @@ static struct list_head driver_params = { &driver_params, &driver_params };
 struct driver_param *get_driver_param(unsigned char *n)
 {
 	struct driver_param *dp;
-	foreach(dp, driver_params) if (!strcasecmp(dp->name, n)) return dp;
-	dp = mem_calloc(sizeof(struct driver_param) + strlen(n) + 1);
-	dp->codepage = get_cp_index("iso-8859-1");
-	strcpy(dp->name, n);
+	foreach(dp, driver_params) if (!strcasecmp(cast_const_char dp->name, cast_const_char n)) return dp;
+	dp = mem_calloc(sizeof(struct driver_param) + strlen(cast_const_char n) + 1);
+	dp->codepage = get_cp_index(cast_uchar "iso-8859-1");
+	strcpy(cast_char dp->name, cast_const_char n);
 	dp->shell = mem_calloc(1);
 	dp->nosave = 1;
 	add_to_list(driver_params, dp);
@@ -844,7 +1209,7 @@ static unsigned char *dp_rd(struct option *o, unsigned char *c)
 	mem_free(n);
 	return NULL;
 	err:
-	return "Error reading driver mode specification";
+	return cast_uchar "Error reading driver mode specification";
 }
 
 static void dp_wr(struct option *o, unsigned char **s, int *l)
@@ -855,13 +1220,33 @@ static void dp_wr(struct option *o, unsigned char **s, int *l)
 		if (dp->nosave) continue;
 		add_nm(o, s, l);
 		add_quoted_to_str(s, l, dp->name);
-		add_to_str(s, l, " ");
+		add_to_str(s, l, cast_uchar " ");
 		add_quoted_to_str(s, l, dp->param ? dp->param : (unsigned char*)"");
-		add_to_str(s, l, " ");
+		add_to_str(s, l, cast_uchar " ");
 		add_quoted_to_str(s, l, dp->shell);
-		add_to_str(s, l, " ");
+		add_to_str(s, l, cast_uchar " ");
 		add_to_str(s, l, get_cp_mime_name(dp->codepage));
 	}
+}
+
+static unsigned char *ip_rd(struct option *o, unsigned char *c)
+{
+	unsigned char *e;
+	e = str_rd(o, c);
+	if (e) return e;
+	if (*(unsigned char *)o->ptr && numeric_ip_address(o->ptr, NULL) == -1) return cast_uchar "Invalid IP address";
+	return NULL;
+}
+
+static unsigned char *ipv6_rd(struct option *o, unsigned char *c)
+{
+	unsigned char *e;
+	e = str_rd(o, c);
+	if (e) return e;
+#ifdef SUPPORT_IPV6
+	if (*(unsigned char *)o->ptr && numeric_ipv6_address(o->ptr, NULL, NULL) == -1) return cast_uchar "Invalid IPv6 address";
+#endif
+	return NULL;
 }
 
 static unsigned char *gen_cmd(struct option *o, unsigned char ***argv, int *argc)
@@ -869,7 +1254,7 @@ static unsigned char *gen_cmd(struct option *o, unsigned char ***argv, int *argc
 	unsigned char *e;
 	int l;
 	unsigned char *r;
-	if (!*argc) return "Parameter expected";
+	if (!*argc) return cast_uchar "Parameter expected";
 	e = init_str();
 	l = 0;
 	add_quoted_to_str(&e, &l, **argv);
@@ -882,29 +1267,58 @@ static unsigned char *gen_cmd(struct option *o, unsigned char ***argv, int *argc
 
 static unsigned char *lookup_cmd(struct option *o, unsigned char ***argv, int *argc)
 {
-	ip__address addr;
-	unsigned char *p = (unsigned char *)&addr;
-	if (!*argc) return "Parameter expected";
-	if (*argc >= 2) return "Too many parameters";
+	int i;
+	struct lookup_result addr;
+	if (!*argc) return cast_uchar "Parameter expected";
+	if (*argc >= 2) return cast_uchar "Too many parameters";
 	(*argv)++; (*argc)--;
-	if (do_real_lookup(*(*argv - 1), &addr)) {
-#if defined(HAVE_GETHOSTBYNAME) && defined(HAVE_HERROR)
+	do_real_lookup(*(*argv - 1), ipv6_options.addr_preference, &addr);
+	if (!addr.n) {
+#if !defined(USE_GETADDRINFO) && defined(HAVE_GETHOSTBYNAME) && defined(HAVE_HERROR)
 		herror("error");
 #else
 		fprintf(stderr, "error: host not found\n");
 #endif
-		return "";
+		exit(RET_ERROR);
+		not_reached(return cast_uchar "";)
 	}
-	printf("%d.%d.%d.%d\n", (int)p[0], (int)p[1], (int)p[2], (int)p[3]);
+	for (i = 0; i < addr.n; i++) {
+		switch (addr.a[i].af) {
+			case AF_INET: {
+				printf("%d.%d.%d.%d", (int)addr.a[i].addr[0], (int)addr.a[i].addr[1], (int)addr.a[i].addr[2], (int)addr.a[i].addr[3]);
+				break;
+			}
+#ifdef SUPPORT_IPV6
+			case AF_INET6: {
+				int j;
+#ifdef HAVE_INET_NTOP
+				unsigned char buffer[INET6_ADDRSTRLEN];
+				struct in6_addr i6a;
+				memcpy(&i6a, addr.a[i].addr, 16);
+				if (inet_ntop(AF_INET6, &i6a, cast_char buffer, sizeof buffer))
+					printf("%s", cast_const_char buffer);
+				else
+#endif
+				for (j = 0; j < 16; j += 2)
+					printf("%x%s", (addr.a[i].addr[j] << 8) + addr.a[i].addr[j + 1], j == 14 ? "" : ":");
+			}
+#endif
+		}
+		if (addr.a[i].scope_id)
+			printf("%%%u", addr.a[i].scope_id);
+		printf("\n");
+	}
 	fflush(stdout);
-	return "";
+	exit(RET_OK);
+	not_reached(return cast_uchar "";)
 }
 
 static unsigned char *version_cmd(struct option *o, unsigned char ***argv, int *argc)
 {
 	printf("Links " VERSION_STRING "\n");
 	fflush(stdout);
-	return "";
+	exit(RET_OK);
+	not_reached(return cast_uchar "";)
 }
 
 static unsigned char *set_cmd(struct option *o, unsigned char ***argv, int *argc)
@@ -921,7 +1335,7 @@ static unsigned char *unset_cmd(struct option *o, unsigned char ***argv, int *ar
 
 static unsigned char *setstr_cmd(struct option *o, unsigned char ***argv, int *argc)
 {
-	if (!*argc) return "Parameter expected";
+	if (!*argc) return cast_uchar "Parameter expected";
 	safe_strncpy(o->ptr, **argv, o->max);
 	(*argv)++; (*argc)--;
 	return NULL;
@@ -929,7 +1343,7 @@ static unsigned char *setstr_cmd(struct option *o, unsigned char ***argv, int *a
 
 static unsigned char *dump_cmd(struct option *o, unsigned char ***argv, int *argc)
 {
-	if (dmp != o->min && dmp) return "Can't use both -dump and -source";
+	if (dmp != o->min && dmp) return cast_uchar "Can't use both -dump and -source";
 	dmp = o->min;
 	no_connect = 1;
 	return NULL;
@@ -944,7 +1358,17 @@ static unsigned char *printhelp_cmd(struct option *o, unsigned char ***argv, int
 fprintf(stdout, "%s%s%s%s%s%s\n",
 
 ("links [options] URL\n"
+"\n"
 "Options are:\n"
+"\n"
+" -help\n"
+"  Prints this help screen\n"
+"\n"
+" -version\n"
+"  Prints the links version number and exit.\n"
+"\n"
+" -lookup <hostname>\n"
+"  Does name lookup, like command \"host\".\n"
 "\n"
 " -g\n"
 "  Run in graphics mode.\n"
@@ -998,11 +1422,12 @@ fprintf(stdout, "%s%s%s%s%s%s\n",
 "  Runs links as a separate instance - instead of connecting to\n"
 "    existing instance.\n"
 "\n"
-" -download-utime <0>/<1>\n"
-"  Set time of downloaded files to last modification time reported by server.\n"
+" -download-dir <path>\n"
+"  Default download directory.\n"
+"    (default: actual dir)\n"
 "\n"
-" -async-dns <0>/<1>\n"
-"  Asynchronous DNS resolver on(1)/off(0).\n"
+" -language <language>\n"
+"  Set user interface language.\n"
 "\n"
 " -max-connections <max>\n"
 "  Maximum number of concurrent connections.\n"
@@ -1024,6 +1449,18 @@ fprintf(stdout, "%s%s%s%s%s%s\n",
 "  Timeout on non restartable connections.\n"
 "    (default: 600)\n"
 "\n"
+" -bind-address <ip address>\n"
+"  Use a specific local IP address.\n"
+"\n"
+" -bind-address-ipv6 <ipv6 address>\n"
+"  Use a specific local IPv6 address.\n"
+"\n"
+" -async-dns <0>/<1>\n"
+"  Asynchronous DNS resolver on(1)/off(0).\n"
+"\n"
+" -download-utime <0>/<1>\n"
+"  Set time of downloaded files to last modification time reported by server.\n"
+"\n"
 " -format-cache-size <num>\n"
 "  Number of formatted document pages cached.\n"
 "    (default: 5)\n"
@@ -1033,15 +1470,37 @@ fprintf(stdout, "%s%s%s%s%s%s\n",
 "    (default: 1048576)\n"
 "\n"
 " -image-cache-size <bytes>\n"
-"  Cache memory in bytes.\n"
+"  Image cache in bytes.\n"
 "    (default: 1048576)\n"
+"\n"
+" -font-cache-size <bytes>\n"
+"  Font cache in bytes.\n"
+"    (default: 2097152)\n"
+"\n"
+" -aggressive-cache <0>/<1>\n"
+"    (default 1)\n"
+"  Always cache everything regardless of server's caching recomendations.\n"
+"    Many servers deny caching even if their content is not changing\n"
+"    just to get more hits and more money from ads.\n"
 "\n"),
-(" -http-proxy <host:port>\n"
+(" -address-preference <0>/<1>/<2>/<3>/<4>\n"
+"    (default 0)\n"
+"  0 - use system default.\n"
+"  1 - prefer IPv4.\n"
+"  2 - prefer IPv6.\n"
+"  3 - use only IPv4.\n"
+"  4 - use only IPv6.\n"
+"\n"
+" -http-proxy <host:port>\n"
 "  Host and port number of the HTTP proxy, or blank.\n"
 "    (default: blank)\n"
 "\n"
 " -ftp-proxy <host:port>\n"
 "  Host and port number of the FTP proxy, or blank.\n"
+"    (default: blank)\n"
+"\n"
+" -https-proxy <host:port>\n"
+"  Host and port number of the HTTPS proxy, or blank.\n"
 "    (default: blank)\n"
 "\n"
 " -socks-proxy <user@host:port>\n"
@@ -1057,21 +1516,8 @@ fprintf(stdout, "%s%s%s%s%s%s\n",
 "    (default 0)\n"
 "  \"1\" causes that Links won't initiate any non-proxy connection.\n"
 "    It is useful for anonymization with tor or similar networks.\n"
-"\n"
-" -download-dir <path>\n"
-"  Default download directory.\n"
-"    (default: actual dir)\n"
-"\n"
-" -aggressive-cache <0>/<1>\n"
-"    (default 1)\n"
-"  Always cache everything regardless of server's caching recomendations.\n"
-"    Many servers deny caching even if their content is not changing\n"
-"    just to get more hits and more money from ads.\n"
 "\n"),
-(" -language <language>\n"
-"  Set user interface language.\n"
-"\n"
-" -http-bugs.http10 <0>/<1>\n"
+(" -http-bugs.http10 <0>/<1>\n"
 "    (default 0)\n"
 "  \"1\" forces using only HTTP/1.0 protocol. (useful for buggy servers\n"
 "    that claim to be HTTP/1.1 compliant but are not)\n"
@@ -1107,13 +1553,13 @@ fprintf(stdout, "%s%s%s%s%s%s\n",
 "    (default 0)\n"
 "  Retry on internal server errors (50x).\n"
 "\n"
-" -http.referer <0>/<1>/<2>/<3>\n"
-"    (default 0)\n"
-"  0 - do not send referer\n"
-"  1 - send the requested URL as referer\n"
-"  2 - send fake referer\n"
-"  3 - send real referer\n"
-"  4 - send real referer only to the same server\n"
+" -http.referer <0>/<1>/<2>/<3>/<4>\n"
+"    (default 4)\n"
+"  0 - do not send referer.\n"
+"  1 - send the requested URL as referer.\n"
+"  2 - send fake referer.\n"
+"  3 - send real referer.\n"
+"  4 - send real referer only to the same server.\n"
 "\n"
 " -http.fake-referer <string>\n"
 "  Fake referer value.\n"
@@ -1130,6 +1576,9 @@ fprintf(stdout, "%s%s%s%s%s%s\n",
 " -ftp.use-passive <0>/<1>\n"
 "  Use ftp PASV command to bypass firewalls.\n"
 "\n"
+" -ftp.use-eprt-epsv <0>/<1>\n"
+"  Use EPRT and EPSV commands instead of PORT and PASV.\n"
+"\n"
 " -ftp.fast <0>/<1>\n"
 "  Send more ftp commands simultaneously. Faster response when\n"
 "    browsing ftp directories, but it is incompatible with RFC\n"
@@ -1141,10 +1590,10 @@ fprintf(stdout, "%s%s%s%s%s%s\n",
 " -menu-font-size <size>\n"
 "  Size of font in menu.\n"
 "\n"
-" -background-color 0xRRGGBB\n"
+" -menu-background-color 0xRRGGBB\n"
 "  Set menu background color in graphics mode, RRGGBB are hex.\n"
 "\n"
-" -foreground-color 0xRRGGBB\n"
+" -menu-foreground-color 0xRRGGBB\n"
 "  Set menu foreground color in graphics mode.\n"
 "\n"
 " -scroll-bar-area-color 0xRRGGBB\n"
@@ -1155,6 +1604,12 @@ fprintf(stdout, "%s%s%s%s%s%s\n",
 "\n"
 " -scroll-bar-frame-color 0xRRGGBB\n"
 "  Set color of scroll bar frame.\n"
+"\n"
+" -bookmarks-codepage <codepage>\n"
+"  Character set of bookmarks file.\n"
+"\n"
+" -bookmarks-file <file>\n"
+"  File to store bookmarks.\n"
 "\n"
 " -display-red-gamma <fp-value>\n"
 "  Red gamma of display.\n"
@@ -1187,12 +1642,17 @@ fprintf(stdout, "%s%s%s%s%s%s\n",
 " -display-optimize <0>/<1>/<2>\n"
 "  Optimize for CRT (0), LCD RGB (1), LCD BGR (2).\n"
 "\n"
-" -gamma correction <0>/<1>/<2>\n"
+" -gamma-correction <0>/<1>/<2>\n"
 "  Type of gamma correction:\n"
 "    (default 2)\n"
 "  0 - 8-bit (fast).\n"
 "  1 - 16-bit (slow).\n"
 "  2 - automatically detect according to speed of FPU.\n"
+"\n"
+" -overwrite-instead-of-scroll <0>/<1>\n"
+"  Overwrite the screen instead of scrolling it\n"
+"    (valid for svgalib and framebuffer).\n"
+"    Overwriting may or may not be faster, depending on hardware.\n"
 "\n"
 #ifdef JS
 " -enable-javascript <0>/<1>\n"
@@ -1221,12 +1681,6 @@ fprintf(stdout, "%s%s%s%s%s%s\n",
 "  Amount of kilobytes the javascript may allocate.\n"
 "\n"
 #endif
-" -bookmarks-codepage <codepage>\n"
-"  Character set of bookmarks file.\n"
-"\n"
-" -bookmarks-file <file>\n"
-"  File to store bookmarks.\n"
-"\n"
 " -html-assume-codepage <codepage>\n"
 "  If server didn't specify document character set, assume this.\n"
 "\n"
@@ -1274,15 +1728,29 @@ fprintf(stdout, "%s%s%s%s%s%s\n",
 " -html-user-font-size <size>\n"
 "  Size of font on pages in graphics mode.\n"
 "\n"
-" -lookup <hostname>\n"
-"  Does name lookup, like command \"host\".\n"
+" -html-t-text-color <0>-<15>\n"
+"  Text color in text mode.\n"
 "\n"
-" -version\n"
-"  Prints the links version number and exit.\n"
+" -html-t-link-color <0>-<15>\n"
+"  Link color in text mode.\n"
 "\n"
-" -help\n"
-"  Prints this help screen\n"
+" -html-t-background-color <0>-<7>\n"
+"  Background color in text mode.\n"
 "\n"
+" -html-t-ignore-document-color <0>/<1>\n"
+"  Ignore colors specified in html document in text mode.\n"
+"\n"
+" -html-g-text-color 0xRRGGBB\n"
+"  Text color in graphics mode.\n"
+"\n"
+" -html-g-link-color 0xRRGGBB\n"
+"  Link color in graphics mode.\n"
+"\n"
+" -html-g-background-color 0xRRGGBB\n"
+"  Background color in graphics mode.\n"
+"\n"
+" -html-g-ignore-document-color <0>/<1>\n"
+"  Ignore colors specified in html document in graphics mode.\n"
 "\n"),
 ("Keys:\n"
 "	ESC	  display menu\n"
@@ -1309,6 +1777,7 @@ fprintf(stdout, "%s%s%s%s%s%s\n",
 "	s	  bookmarks\n"
 "	q	  quit or close current window\n"
 "	^X	  cut to clipboard\n"
+"	^B	  copy to clipboard\n"
 "	^V	  paste from clipboard\n"
 "	^K	  cut line (in textarea) or text to the end (in field)\n"
 "	^U	  cut all text before cursor\n"
@@ -1329,7 +1798,8 @@ fprintf(stdout, "%s%s%s%s%s%s\n",
 ));
 
 	fflush(stdout);
-	return "";
+	exit(RET_OK);
+	not_reached(return cast_uchar "";)
 }
 
 void end_config(void)
@@ -1351,8 +1821,6 @@ unsigned char ggr_display[MAX_STR_LEN] = "";
 
 int anonymous = 0;
 
-unsigned char system_name[MAX_STR_LEN];
-
 unsigned char default_target[MAX_STR_LEN] ="";
 
 unsigned char *links_home = NULL;
@@ -1361,39 +1829,33 @@ int first_use = 0;
 int no_connect = 0;
 int base_session = 0;
 int dmp = 0;
+int screen_width = 80;
+int dump_codepage = -1;
 int force_html = 0;
 
-int async_lookup = 1;
-int download_utime = 0;
 int max_connections = 10;
 int max_connections_to_host = 8;
 int max_tries = 3;
 int receive_timeout = 120;
 int unrestartable_receive_timeout = 600;
-
-int screen_width = 80;
-int dump_codepage = -1;
+unsigned char bind_ip_address[16] = "";
+unsigned char bind_ipv6_address[INET6_ADDRSTRLEN] = "";
+int async_lookup = 1;
+int download_utime = 0;
 
 int max_format_cache_entries = 5;
 int memory_cache_size = 1048576;
 int image_cache_size = 1048576;
+int font_cache_size = 2097152;
+int aggressive_cache = 1;
 
-struct document_setup dds = { 0, 0, 1, 1, 0, 0, 3, 0, 0, 0, 18, 1, 
-	100, /* Image scale */
-	0, /* Porn enable */
-	0 };
+struct ipv6_options ipv6_options = { ADDR_PREFERENCE_DEFAULT };
+struct proxies proxies = { "", "", "", "", "", 0 };
+struct http_options http_options = { 0, 1, 1, 0, 0, 0, 0, { REFERER_REAL_SAME_SERVER, "", "", "" } };
+struct ftp_options ftp_options = { "somebody@host.domain", 0, 0, 0, 1 };
 
-struct rgb default_fg = { 191, 191, 191, 0 };
-struct rgb default_bg = { 0, 0, 0, 0 };
-struct rgb default_link = { 255, 255, 255, 0 };
-struct rgb default_vlink = { 255, 255, 0, 0 };
+unsigned char download_dir[MAX_STR_LEN] = "";
 
-struct rgb default_fg_g = { 0, 0, 0, 0 };
-struct rgb default_bg_g = { 192, 192, 192, 0 };
-struct rgb default_link_g = { 0, 0, 255, 0 };
-struct rgb default_vlink_g = { 0, 0, 128, 0 };
-
-struct proxies proxies = { "", "", "", "", 0 };
 int js_enable=1;   /* 0=disable javascript */
 int js_verbose_errors=0;   /* 1=create dialog on every javascript error, 0=be quiet and continue */
 int js_verbose_warnings=0;   /* 1=create dialog on every javascript warning, 0=be quiet and continue */
@@ -1403,33 +1865,63 @@ int js_manual_confirmation=1; /* !0==annoying dialog on every goto url etc. */
 int js_fun_depth=100;
 int js_memory_limit=5*1024;  /* in kilobytes, should be in range 1M-20M (1MB=1024*1024B) */
 
-int display_optimize=0;	/*0=CRT, 1=LCD RGB, 2=LCD BGR */
-int gamma_bits=2;	/*0 --- 8, 1 --- 16, 2 --- auto */
+double display_red_gamma=2.2; /* Red gamma exponent of the display */
+double display_green_gamma=2.2; /* Green gamma exponent of the display */
+double display_blue_gamma=2.2; /* Blue gamma exponent of the display */
+double user_gamma=1.0; /* 1.0 for 64 lx. This is the number user directly changes in the menu */
 double bfu_aspect=1; /* 0.1 to 10.0, 1.0 default. >1 makes circle wider */
 int aspect_on=1;
+int display_optimize=0;	/*0=CRT, 1=LCD RGB, 2=LCD BGR */
+int dither_letters=1;
+int dither_images=1;
+int gamma_bits=2;	/*0 --- 8, 1 --- 16, 2 --- auto */
+int overwrite_instead_of_scroll = 1;
 
-unsigned char download_dir[MAX_STR_LEN] = "";
 
-int aggressive_cache = 1;
+int menu_font_size = G_BFU_DEFAULT_FONT_SIZE;
 
-struct ftp_options ftp_options = { "somebody@host.domain", 0, 0, 1 };
+unsigned G_BFU_FG_COLOR = G_DEFAULT_BFU_FG_COLOR;
+unsigned G_BFU_BG_COLOR = G_DEFAULT_BFU_BG_COLOR;
+unsigned G_SCROLL_BAR_AREA_COLOR = G_DEFAULT_SCROLL_BAR_AREA_COLOR;
+unsigned G_SCROLL_BAR_BAR_COLOR = G_DEFAULT_SCROLL_BAR_BAR_COLOR;
+unsigned G_SCROLL_BAR_FRAME_COLOR = G_DEFAULT_SCROLL_BAR_FRAME_COLOR;
 
-/* These are workarounds for some CGI script bugs */
-struct http_options http_options = { 0, 1, 1, 0, 0, 0, 0, { REFERER_NONE, "", "", "" } };
-/*int bug_302_redirect = 0;*/
-	/* When got 301 or 302 from POST request, change it to GET
-	   - this violates RFC2068, but some buggy message board scripts rely on it */
-/*int bug_post_no_keepalive = 0;*/
-	/* No keepalive connection after POST request. Some buggy PHP databases report bad
-	   results if GET wants to retreive data POSTed in the same connection */
+int bookmarks_codepage=0;
+unsigned char bookmarks_file[MAX_STR_LEN]="";
+
+struct document_setup dds = {
+	0, /* assumed codepage */
+	0, /* ignore codepage from server */
+	1, /* tables */
+	1, /* frames */
+	0, /* images */
+	0, /* image_names */
+	3, /* margin */
+	0, /* num_links */
+	0, /* table_order */
+	0, /* auto_refresh */
+	18, /* font_size */
+	1, /* display images */
+	100, /* image scale */
+	0, /* porn enable */
+	0, /* target in new window */
+	7, /* t text color */
+	15, /* t link color */
+	0, /* t background color */
+	0, /* t ignore document color */
+	0x000000, /* g text color */
+	0x0000ff, /* g link color */
+	0xc0c0c0, /* g background color */
+	0, /* g ignore document color */
+};
 
 static struct option links_options[] = {
 	{1, printhelp_cmd, NULL, NULL, 0, 0, NULL, NULL, "?"},
 	{1, printhelp_cmd, NULL, NULL, 0, 0, NULL, NULL, "h"},
 	{1, printhelp_cmd, NULL, NULL, 0, 0, NULL, NULL, "help"},
 	{1, printhelp_cmd, NULL, NULL, 0, 0, NULL, NULL, "-help"},
-	{1, lookup_cmd, NULL, NULL, 0, 0, NULL, NULL, "lookup"},
 	{1, version_cmd, NULL, NULL, 0, 0, NULL, NULL, "version"},
+	{1, lookup_cmd, NULL, NULL, 0, 0, NULL, NULL, "lookup"},
 	{1, set_cmd, NULL, NULL, 0, 0, &no_connect, NULL, "no-connect"},
 	{1, set_cmd, NULL, NULL, 0, 0, &anonymous, NULL, "anonymous"},
 	{1, set_cmd, NULL, NULL, 0, 0, &ggr, NULL, "g"},
@@ -1444,23 +1936,30 @@ static struct option links_options[] = {
 	{1, dump_cmd, NULL, NULL, D_DUMP, 0, NULL, NULL, "dump"},
 	{1, gen_cmd, num_rd, NULL, 10, 512, &screen_width, "dump_width", "width" },
 	{1, gen_cmd, cp_rd, NULL, 1, 0, &dump_codepage, "dump_codepage", "codepage" },
-	{1, gen_cmd, num_rd, num_wr, 0, 1, &async_lookup, "async_dns", "async-dns"},
-	{1, gen_cmd, num_rd, num_wr, 0, 1, &download_utime, "download_utime", "download-utime"},
+	{1, gen_cmd, str_rd, str_wr, 0, MAX_STR_LEN, download_dir, "download_dir", "download-dir"},
+	{1, gen_cmd, lang_rd, lang_wr, 0, 0, &current_language, "language", "language"},
 	{1, gen_cmd, num_rd, num_wr, 1, 99, &max_connections, "max_connections", "max-connections"},
 	{1, gen_cmd, num_rd, num_wr, 1, 99, &max_connections_to_host, "max_connections_to_host", "max-connections-to-host"},
 	{1, gen_cmd, num_rd, num_wr, 0, 16, &max_tries, "retries", "retries"},
 	{1, gen_cmd, num_rd, num_wr, 1, 9999, &receive_timeout, "receive_timeout", "receive-timeout"},
 	{1, gen_cmd, num_rd, num_wr, 1, 9999, &unrestartable_receive_timeout, "unrestartable_receive_timeout", "unrestartable-receive-timeout"},
+	{1, gen_cmd, ip_rd, str_wr, 0, 16, bind_ip_address, "bind_address", "bind-address"},
+	{1, gen_cmd, ipv6_rd, str_wr, 0, INET6_ADDRSTRLEN, bind_ipv6_address, "bind_address_ipv6", "bind-address-ipv6"},
+	{1, gen_cmd, num_rd, num_wr, 0, 1, &async_lookup, "async_dns", "async-dns"},
+	{1, gen_cmd, num_rd, num_wr, 0, 1, &download_utime, "download_utime", "download-utime"},
 	{1, gen_cmd, num_rd, num_wr, 0, 999, &max_format_cache_entries, "format_cache_size", "format-cache-size"},
 	{1, gen_cmd, num_rd, num_wr, 0, MAXINT, &memory_cache_size, "memory_cache_size", "memory-cache-size"},
 	{1, gen_cmd, num_rd, num_wr, 0, MAXINT, &image_cache_size, "image_cache_size", "image-cache-size"},
+	{1, gen_cmd, num_rd, num_wr, 0, MAXINT, &font_cache_size, "font_cache_size", "font-cache-size"},
+	{1, gen_cmd, num_rd, num_wr, 0, 1, &aggressive_cache, "http_bugs.aggressive_cache", "aggressive-cache"},
+	{1, gen_cmd, num_rd, num_wr, 0, 4, &ipv6_options.addr_preference, "ipv6.address_preference", "address-preference"},
 	{1, gen_cmd, str_rd, str_wr, 0, MAX_STR_LEN, proxies.http_proxy, "http_proxy", "http-proxy"},
 	{1, gen_cmd, str_rd, str_wr, 0, MAX_STR_LEN, proxies.ftp_proxy, "ftp_proxy", "ftp-proxy"},
+	{1, gen_cmd, str_rd, str_wr, 0, MAX_STR_LEN, proxies.https_proxy, "https_proxy", "https-proxy"},
 	{1, gen_cmd, str_rd, str_wr, 0, MAX_STR_LEN, proxies.socks_proxy, "socks_proxy", "socks-proxy"},
-	{1, gen_cmd, str_rd, str_wr, 0, MAX_STR_LEN, proxies.dns_append, "-append_text_to_dns_lookups", "append-text-to-dns-lookups"},
+	{1, gen_cmd, str_rd, NULL, 0, MAX_STR_LEN, proxies.dns_append, "-append_text_to_dns_lookups", NULL}, /* old version incorrectly saved it with '-' */
+	{1, gen_cmd, str_rd, str_wr, 0, MAX_STR_LEN, proxies.dns_append, "append_text_to_dns_lookups", "append-text-to-dns-lookups"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &proxies.only_proxies, "only_proxies", "only-proxies"},
-	{1, gen_cmd, str_rd, str_wr, 0, MAX_STR_LEN, download_dir, "download_dir", "download-dir"},
-	{1, gen_cmd, lang_rd, lang_wr, 0, 0, &current_language, "language", "language"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &http_options.http10, "http_bugs.http10", "http-bugs.http10"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &http_options.allow_blacklist, "http_bugs.allow_blacklist", "http-bugs.allow-blacklist"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &http_options.bug_302_redirect, "http_bugs.bug_302_redirect", "http-bugs.bug-302-redirect"},
@@ -1468,42 +1967,43 @@ static struct option links_options[] = {
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &http_options.no_accept_charset, "http_bugs.no_accept_charset", "http-bugs.bug-no-accept-charset"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &http_options.no_compression, "http_bugs.no_compression", "http-bugs.no-compression"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &http_options.retry_internal_errors, "http_bugs.retry_internal_errors", "http-bugs.retry-internal-errors"},
-	{1, gen_cmd, num_rd, num_wr, 0, 1, &aggressive_cache, "http_bugs.aggressive_cache", "aggressive-cache"},
 	{1, gen_cmd, num_rd, num_wr, 0, 4, &http_options.header.referer, "http_referer", "http.referer"},
 	{1, gen_cmd, str_rd, str_wr, 0, MAX_STR_LEN, &http_options.header.fake_referer, "fake_referer", "http.fake-referer"},
 	{1, gen_cmd, str_rd, str_wr, 0, MAX_STR_LEN, &http_options.header.fake_useragent, "fake_useragent", "http.fake-user-agent"},
 	{1, gen_cmd, str_rd, str_wr, 0, MAX_STR_LEN, &http_options.header.extra_header, "http.extra_header", "http.extra-header"},
 	{1, gen_cmd, str_rd, str_wr, 0, MAX_STR_LEN, ftp_options.anon_pass, "ftp.anonymous_password", "ftp.anonymous-password"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &ftp_options.passive_ftp, "ftp.use_passive", "ftp.use-passive"},
+	{1, gen_cmd, num_rd, num_wr, 0, 1, &ftp_options.eprt_epsv, "ftp.use_eprt_epsv", "ftp.use-eprt-epsv"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &ftp_options.fast_ftp, "ftp.fast", "ftp.fast"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &ftp_options.set_tos, "ftp.set_iptos", "ftp.set-iptos"},
 	{1, gen_cmd, num_rd, num_wr, 1, MAX_FONT_SIZE, &menu_font_size, "menu_font_size", "menu-font-size"},
-	{1, gen_cmd, num_rd, num_wr, 0, 0xffffff, &G_BFU_BG_COLOR, "background_color", "background-color"},
-	{1, gen_cmd, num_rd, num_wr, 0, 0xffffff, &G_BFU_FG_COLOR, "foreground_color", "foreground-color"},
+	{1, gen_cmd, num_rd, num_wr, 0, 0xffffff, &G_BFU_BG_COLOR, "background_color", "menu-background-color"},
+	{1, gen_cmd, num_rd, num_wr, 0, 0xffffff, &G_BFU_FG_COLOR, "foreground_color", "menu-foreground-color"},
 	{1, gen_cmd, num_rd, num_wr, 0, 0xffffff, &G_SCROLL_BAR_AREA_COLOR, "scroll_bar_area_color", "scroll-bar-area-color"},
 	{1, gen_cmd, num_rd, num_wr, 0, 0xffffff, &G_SCROLL_BAR_BAR_COLOR, "scroll_bar_bar_color", "scroll-bar-bar-color"},
 	{1, gen_cmd, num_rd, num_wr, 0, 0xffffff, &G_SCROLL_BAR_FRAME_COLOR, "scroll_bar_frame_color", "scroll-bar-frame-color"},
+	{1, gen_cmd, cp_rd, cp_wr, 0, 0, &bookmarks_codepage, "bookmarks_codepage", "bookmarks-codepage"},
+	{1, gen_cmd, str_rd, str_wr, 0, MAX_STR_LEN, bookmarks_file, "bookmarks_file", "bookmarks-file"},
 	{1, gen_cmd, dbl_rd, dbl_wr, 1, 10000, &display_red_gamma, "display_red_gamma", "display-red-gamma"},
 	{1, gen_cmd, dbl_rd, dbl_wr, 1, 10000, &display_green_gamma, "display_green_gamma", "display-green-gamma"},
 	{1, gen_cmd, dbl_rd, dbl_wr, 1, 10000, &display_blue_gamma, "display_blue_gamma", "display-blue-gamma"},
 	{1, gen_cmd, dbl_rd, dbl_wr, 1, 10000, &user_gamma, "user_gamma", "user-gamma"},
 	{1, gen_cmd, dbl_rd, dbl_wr, 25, 400, &bfu_aspect, "bfu_aspect", "bfu-aspect"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &aspect_on, "aspect_on", "aspect-on"},
+	{1, gen_cmd, num_rd, num_wr, 0, 2, &display_optimize, "display_optimize", "display-optimize"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &dither_letters, "dither_letters", "dither-letters"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &dither_images, "dither_images", "dither-images"},
-	{1, gen_cmd, num_rd, num_wr, 0, 2, &display_optimize, "display_optimize", "display-optimize"},
 	{1, gen_cmd, num_rd, num_wr, 0, 2, &gamma_bits, "gamma_correction", "gamma-correction"},
-	{1, gen_cmd, num_rd, num_wr, 0, 1, &js_enable, "enable_javascript", "enable-javascript"},
-	{1, gen_cmd, num_rd, num_wr, 0, 1, &js_verbose_errors, "verbose_javascript_errors", "js.verbose-errors"},
-	{1, gen_cmd, num_rd, num_wr, 0, 1, &js_verbose_warnings, "verbose_javascript_warnings", "js.verbose-warnings"},
-	{1, gen_cmd, num_rd, num_wr, 0, 1, &js_all_conversions, "enable_all_conversions", "js.enable-all-conversions"},
-	{1, gen_cmd, num_rd, num_wr, 0, 1, &js_global_resolve, "enable_global_resolution", "js.enable-global-resolution"},
-	{1, gen_cmd, num_rd, num_wr, 0, 1, &js_manual_confirmation, "javascript_manual_confirmation", "js.manual-confirmation"},
-	{1, gen_cmd, num_rd, num_wr, 0, 999999, &js_fun_depth, "js_recursion_depth", "js.recursion-depth"},
-	{1, gen_cmd, num_rd, num_wr, 1024, 30*1024, &js_memory_limit, "js_memory_limit", "js.memory-limit"},
-	{1, gen_cmd, cp_rd, cp_wr, 0, 0, &bookmarks_codepage, "bookmarks_codepage", "bookmarks-codepage"},
-	{1, gen_cmd, str_rd, str_wr, 0, MAX_STR_LEN, bookmarks_file, "bookmarks_file", "bookmarks-file"},
-	{1, gen_cmd, cp_rd, NULL, 0, 0, &dds.assume_cp, "assume_codepage", "assume-codepage"},
+	{1, gen_cmd, num_rd, num_wr, 0, 1, &overwrite_instead_of_scroll, "overwrite_instead_of_scroll", "overwrite-instead-of-scroll"},
+	{1, gen_cmd, num_rd, NULL, 0, 1, &js_enable, "enable_javascript", NULL},
+	{1, gen_cmd, num_rd, NULL, 0, 1, &js_verbose_errors, "verbose_javascript_errors", NULL},
+	{1, gen_cmd, num_rd, NULL, 0, 1, &js_verbose_warnings, "verbose_javascript_warnings", NULL},
+	{1, gen_cmd, num_rd, NULL, 0, 1, &js_all_conversions, "enable_all_conversions", NULL},
+	{1, gen_cmd, num_rd, NULL, 0, 1, &js_global_resolve, "enable_global_resolution", NULL},
+	{1, gen_cmd, num_rd, NULL, 0, 1, &js_manual_confirmation, "javascript_manual_confirmation", NULL},
+	{1, gen_cmd, num_rd, NULL, 0, 999999, &js_fun_depth, "js_recursion_depth", NULL},
+	{1, gen_cmd, num_rd, NULL, 1024, 30*1024, &js_memory_limit, "js_memory_limit", NULL},
+	{1, gen_cmd, cp_rd, NULL, 0, 0, &dds.assume_cp, "assume_codepage", NULL},
 	{1, NULL, term_rd, term_wr, 0, 0, NULL, "terminal", NULL},
 	{1, NULL, term2_rd, NULL, 0, 0, NULL, "terminal2", NULL},
 	{1, NULL, type_rd, type_wr, 0, 0, NULL, "association", NULL},
@@ -1519,21 +2019,29 @@ static struct option links_options[] = {
 };
 
 static struct option html_options[] = {
-	{1, gen_cmd, num_rd, num_wr, 0, 1, &dds.hard_assume, "html_hard_assume", "html-hard-assume"},
 	{1, gen_cmd, cp_rd, cp_wr, 0, 0, &dds.assume_cp, "html_assume_codepage", "html-assume-codepage"},
+	{1, gen_cmd, num_rd, num_wr, 0, 1, &dds.hard_assume, "html_hard_assume", "html-hard-assume"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &dds.tables, "html_tables", "html-tables"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &dds.frames, "html_frames", "html-frames"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &dds.images, "html_images", "html-images"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &dds.image_names, "html_image_names", "html-image-names"},
-	{1, gen_cmd, num_rd, num_wr, 0, 1, &dds.display_images, "html_display_images", "html-display-images"},
-	{1, gen_cmd, num_rd, num_wr, 1, 500, &dds.image_scale, "html_image_scale", "html-image-scale"},
-	{1, gen_cmd, num_rd, num_wr, 0, 1, &dds.porn_enable, "html_bare_image_autoscale", "html-bare-image-autoscale"},
+	{1, gen_cmd, num_rd, num_wr, 0, 9, &dds.margin, "html_margin", "html-margin"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &dds.num_links, "html_numbered_links", "html-numbered-links"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &dds.table_order, "html_table_order", "html-table-order"},
 	{1, gen_cmd, num_rd, num_wr, 0, 1, &dds.auto_refresh, "html_auto_refresh", "html-auto-refresh"},
-	{1, gen_cmd, num_rd, num_wr, 0, 1, &dds.target_in_new_window, "html_target_in_new_window", "html-target-in-new-window"},
-	{1, gen_cmd, num_rd, num_wr, 0, 9, &dds.margin, "html_margin", "html-margin"},
 	{1, gen_cmd, num_rd, num_wr, 1, MAX_FONT_SIZE, &dds.font_size, "html_font_size", "html-user-font-size"},
+	{1, gen_cmd, num_rd, num_wr, 0, 1, &dds.display_images, "html_display_images", "html-display-images"},
+	{1, gen_cmd, num_rd, num_wr, 1, 500, &dds.image_scale, "html_image_scale", "html-image-scale"},
+	{1, gen_cmd, num_rd, num_wr, 0, 1, &dds.porn_enable, "html_bare_image_autoscale", "html-bare-image-autoscale"},
+	{1, gen_cmd, num_rd, num_wr, 0, 1, &dds.target_in_new_window, "html_target_in_new_window", "html-target-in-new-window"},
+	{1, gen_cmd, num_rd, num_wr, 0, 15, &dds.t_text_color, "html_text_color", "html-text-color"},
+	{1, gen_cmd, num_rd, num_wr, 0, 15, &dds.t_link_color, "html_link_color", "html-link-color"},
+	{1, gen_cmd, num_rd, num_wr, 0, 7, &dds.t_background_color, "html_background_color", "html-background-color"},
+	{1, gen_cmd, num_rd, num_wr, 0, 1, &dds.t_ignore_document_color, "html_ignore_document_color", "html-ignore-document-color"},
+	{1, gen_cmd, num_rd, num_wr, 0, 0xffffff, &dds.g_text_color, "html_g_text_color", "html-g-text-color"},
+	{1, gen_cmd, num_rd, num_wr, 0, 0xffffff, &dds.g_link_color, "html_g_link_color", "html-g-link-color"},
+	{1, gen_cmd, num_rd, num_wr, 0, 0xffffff, &dds.g_background_color, "html_g_background_color", "html-g-background-color"},
+	{1, gen_cmd, num_rd, num_wr, 0, 1, &dds.g_ignore_document_color, "html_g_ignore_document_color", "html-g-ignore-document-color"},
 	{0, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL},
 };
 
@@ -1554,7 +2062,7 @@ static void load_config_file(unsigned char *prefix, unsigned char *name)
 	mem_free(config_file);
 	config_file = stracpy(prefix);
 	if (!config_file) return;
-	add_to_strn(&config_file, ".");
+	add_to_strn(&config_file, cast_uchar ".");
 	add_to_strn(&config_file, name);
 	if ((c = read_config_file(config_file))) goto ok;
 	mem_free(config_file);
@@ -1568,11 +2076,11 @@ static void load_config_file(unsigned char *prefix, unsigned char *name)
 void load_config(void)
 {
 #ifdef SHARED_CONFIG_DIR
-	load_config_file(SHARED_CONFIG_DIR, "links.cfg");
+	load_config_file(cast_uchar SHARED_CONFIG_DIR, cast_uchar "links.cfg");
 #endif
-	load_config_file(links_home, "links.cfg");
-	load_config_file(links_home, "html.cfg");
-	load_config_file(links_home, "user.cfg");
+	load_config_file(links_home, cast_uchar "links.cfg");
+	load_config_file(links_home, cast_uchar "html.cfg");
+	load_config_file(links_home, cast_uchar "user.cfg");
 }
 
 void write_config(struct terminal *term)
@@ -1580,12 +2088,12 @@ void write_config(struct terminal *term)
 #ifdef G
 	if (F) update_driver_param();
 #endif
-	write_config_data(links_home, "links.cfg", links_options, term);
+	write_config_data(links_home, cast_uchar "links.cfg", links_options, term);
 }
 
 void write_html_config(struct terminal *term)
 {
-	write_config_data(links_home, "html.cfg", html_options, term);
+	write_config_data(links_home, cast_uchar "html.cfg", html_options, term);
 }
 
 void load_url_history(void)
@@ -1597,7 +2105,7 @@ void load_url_history(void)
 	/* Must have been called after init_home */
 	if (!links_home) return;
 	history_file = stracpy(links_home);
-	add_to_strn(&history_file, "links.his");
+	add_to_strn(&history_file, cast_uchar "links.his");
 	hs = read_config_file(history_file);
 	mem_free(history_file);
 	if (!hs) return;
@@ -1626,16 +2134,16 @@ void save_url_history(void)
 	/* Must have been called after init_home */
 	if (!links_home) return;
 	history_file = stracpy(links_home);
-	add_to_strn(&history_file, "links.his");
+	add_to_strn(&history_file, cast_uchar "links.his");
 	hs = init_str();
 	hsl = 0;
 	foreachback(hi, goto_url_history.items) {
-		if (!*hi->d || strchr(hi->d, 10) || strchr(hi->d, 13)) continue;
+		if (!*hi->d || strchr(cast_const_char hi->d, 10) || strchr(cast_const_char hi->d, 13)) continue;
 		if (i++ > MAX_HISTORY_ITEMS)
 			break;
 		else {
 			add_to_str(&hs, &hsl, hi->d);
-			add_to_str(&hs, &hsl, NEWLINE);
+			add_to_str(&hs, &hsl, cast_uchar NEWLINE);
 		}
 	}
 	write_to_config_file(history_file, hs);

@@ -47,20 +47,14 @@
 /* Define if your <sys/time.h> declares struct tm.  */
 #undef TM_IN_SYS_TIME
 
-/* The number of bytes in a int.  */
-#undef SIZEOF_INT
-
-/* The number of bytes in a long.  */
-#undef SIZEOF_LONG
-
-/* The number of bytes in a short.  */
-#undef SIZEOF_SHORT
-
 /* The number of bytes in a unsigned.  */
 #undef SIZEOF_UNSIGNED
 
 /* The number of bytes in a unsigned long.  */
 #undef SIZEOF_UNSIGNED_LONG
+
+/* The number of bytes in a unsigned long long.  */
+#undef SIZEOF_UNSIGNED_LONG_LONG
 
 /* The number of bytes in a unsigned short.  */
 #undef SIZEOF_UNSIGNED_SHORT
@@ -68,17 +62,56 @@
 /* Define if you have the DirectFBInit function.  */
 #undef HAVE_DIRECTFBINIT
 
+/* Define if you have the Gpm_GetLibVersion function.  */
+#undef HAVE_GPM_GETLIBVERSION
+
 /* Define if you have the MouOpen function.  */
 #undef HAVE_MOUOPEN
 
+/* Define if you have the XCloseIM function.  */
+#undef HAVE_XCLOSEIM
+
+/* Define if you have the XCreateIC function.  */
+#undef HAVE_XCREATEIC
+
+/* Define if you have the XDestroyIC function.  */
+#undef HAVE_XDESTROYIC
+
 /* Define if you have the XOpenDisplay function.  */
 #undef HAVE_XOPENDISPLAY
+
+/* Define if you have the XOpenIM function.  */
+#undef HAVE_XOPENIM
+
+/* Define if you have the XSupportsLocale function.  */
+#undef HAVE_XSUPPORTSLOCALE
+
+/* Define if you have the XmbTextListToTextProperty function.  */
+#undef HAVE_XMBTEXTLISTTOTEXTPROPERTY
+
+/* Define if you have the Xutf8LookupString function.  */
+#undef HAVE_XUTF8LOOKUPSTRING
+
+/* Define if you have the XwcLookupString function.  */
+#undef HAVE_XWCLOOKUPSTRING
 
 /* Define if you have the _heapmin function.  */
 #undef HAVE__HEAPMIN
 
 /* Define if you have the _read_kbd function.  */
 #undef HAVE__READ_KBD
+
+/* Define if you have the _ucreate function.  */
+#undef HAVE__UCREATE
+
+/* Define if you have the _udefault function.  */
+#undef HAVE__UDEFAULT
+
+/* Define if you have the _udestroy function.  */
+#undef HAVE__UDESTROY
+
+/* Define if you have the _uopen function.  */
+#undef HAVE__UOPEN
 
 /* Define if you have the calloc function.  */
 #undef HAVE_CALLOC
@@ -98,11 +131,17 @@
 /* Define if you have the dhcp_option function.  */
 #undef HAVE_DHCP_OPTION
 
+/* Define if you have the freeaddrinfo function.  */
+#undef HAVE_FREEADDRINFO
+
+/* Define if you have the gai_strerror function.  */
+#undef HAVE_GAI_STRERROR
+
+/* Define if you have the getaddrinfo function.  */
+#undef HAVE_GETADDRINFO
+
 /* Define if you have the getgrgid function.  */
 #undef HAVE_GETGRGID
-
-/* Define if you have the gethostbyaddr function.  */
-#undef HAVE_GETHOSTBYADDR
 
 /* Define if you have the getpagesize function.  */
 #undef HAVE_GETPAGESIZE
@@ -121,6 +160,12 @@
 
 /* Define if you have the herror function.  */
 #undef HAVE_HERROR
+
+/* Define if you have the inet_ntop function.  */
+#undef HAVE_INET_NTOP
+
+/* Define if you have the inet_pton function.  */
+#undef HAVE_INET_PTON
 
 /* Define if you have the mkdir function.  */
 #undef HAVE_MKDIR
@@ -145,6 +190,9 @@
 
 /* Define if you have the png_get_image_width function.  */
 #undef HAVE_PNG_GET_IMAGE_WIDTH
+
+/* Define if you have the png_get_libpng_ver function.  */
+#undef HAVE_PNG_GET_LIBPNG_VER
 
 /* Define if you have the png_get_sRGB function.  */
 #undef HAVE_PNG_GET_SRGB
@@ -179,6 +227,9 @@
 /* Define if you have the setrlimit function.  */
 #undef HAVE_SETRLIMIT
 
+/* Define if you have the sigdelset function.  */
+#undef HAVE_SIGDELSET
+
 /* Define if you have the sigfillset function.  */
 #undef HAVE_SIGFILLSET
 
@@ -212,6 +263,9 @@
 /* Define if you have the unixpath2win function.  */
 #undef HAVE_UNIXPATH2WIN
 
+/* Define if you have the uwin_path function.  */
+#undef HAVE_UWIN_PATH
+
 /* Define if you have the winpath2unix function.  */
 #undef HAVE_WINPATH2UNIX
 
@@ -233,6 +287,9 @@
 /* Define if you have the <X11/keysymdef.h> header file.  */
 #undef HAVE_X11_KEYSYMDEF_H
 
+/* Define if you have the <alloca.h> header file.  */
+#undef HAVE_ALLOCA_H
+
 /* Define if you have the <arpa/inet.h> header file.  */
 #undef HAVE_ARPA_INET_H
 
@@ -241,6 +298,9 @@
 
 /* Define if you have the <bzlib.h> header file.  */
 #undef HAVE_BZLIB_H
+
+/* Define if you have the <cygwin/process.h> header file.  */
+#undef HAVE_CYGWIN_PROCESS_H
 
 /* Define if you have the <directfb.h> header file.  */
 #undef HAVE_DIRECTFB_H
@@ -302,6 +362,9 @@
 /* Define if you have the <linux/vt.h> header file.  */
 #undef HAVE_LINUX_VT_H
 
+/* Define if you have the <lzma.h> header file.  */
+#undef HAVE_LZMA_H
+
 /* Define if you have the <malloc.h> header file.  */
 #undef HAVE_MALLOC_H
 
@@ -328,6 +391,9 @@
 
 /* Define if you have the <png.h> header file.  */
 #undef HAVE_PNG_H
+
+/* Define if you have the <process.h> header file.  */
+#undef HAVE_PROCESS_H
 
 /* Define if you have the <pwd.h> header file.  */
 #undef HAVE_PWD_H
@@ -377,6 +443,9 @@
 /* Define if you have the <time.h> header file.  */
 #undef HAVE_TIME_H
 
+/* Define if you have the <umalloc.h> header file.  */
+#undef HAVE_UMALLOC_H
+
 /* Define if you have the <unistd.h> header file.  */
 #undef HAVE_UNISTD_H
 
@@ -386,8 +455,14 @@
 /* Define if you have the <util/locker.h> header file.  */
 #undef HAVE_UTIL_LOCKER_H
 
+/* Define if you have the <uwin.h> header file.  */
+#undef HAVE_UWIN_H
+
 /* Define if you have the <values.h> header file.  */
 #undef HAVE_VALUES_H
+
+/* Define if you have the <windowsx.h> header file.  */
+#undef HAVE_WINDOWSX_H
 
 /* Define if you have the <zlib.h> header file.  */
 #undef HAVE_ZLIB_H
@@ -415,6 +490,9 @@
 
 /* Define if you have the jpeg library (-ljpeg).  */
 #undef HAVE_LIBJPEG
+
+/* Define if you have the lzma library (-llzma).  */
+#undef HAVE_LIBLZMA
 
 /* Define if you have the m library (-lm).  */
 #undef HAVE_LIBM
@@ -529,6 +607,12 @@
 #undef HAVE_GETHOSTBYNAME_BUG
 
 /* */
+#undef SUPPORT_IPV6
+
+/* */
+#undef SUPPORT_IPV6_SCOPE
+
+/* */
 #undef DEBUGLEVEL
 
 /* */
@@ -569,6 +653,9 @@
 
 /* */
 #undef HAVE_BZIP2
+
+/* */
+#undef HAVE_LZMA
 
 /* */
 #undef G

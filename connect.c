@@ -20,10 +20,12 @@ static void log_data(unsigned char *data, int len)
 		sleep(1);
 		hlaseno = 1;
 	}
-	if ((fd = open(LOG_TRANSFER, O_WRONLY | O_APPEND | O_CREAT, 0600)) != -1) {
+	EINTRLOOP(fd, open(LOG_TRANSFER, O_WRONLY | O_APPEND | O_CREAT, 0600));
+	if (fd != -1) {
+		int rw;
 		set_bin(fd);
-		write(fd, data, len);
-		close(fd);
+		EINTRLOOP(rw, write(fd, data, len));
+		EINTRLOOP(rw, close(fd));
 	}
 }
 
@@ -33,6 +35,7 @@ static void log_data(unsigned char *data, int len)
 
 static void connected(struct connection *);
 static void dns_found(struct connection *, int);
+static void try_connect(struct connection *);
 static void handle_socks_reply(struct connection *);
 
 static void exception(struct connection *c)
@@ -41,44 +44,114 @@ static void exception(struct connection *c)
 	retry_connection(c);
 }
 
+int socket_and_bind(int pf, unsigned char *address)
+{
+	int s;
+	int rs;
+	EINTRLOOP(s, socket(pf, SOCK_STREAM, IPPROTO_TCP));
+	if (s == -1)
+		return -1;
+	if (address && *address) {
+		switch (pf) {
+		case PF_INET: {
+			struct sockaddr_in sa;
+			unsigned char addr[4];
+			if (numeric_ip_address(address, addr) == -1) {
+				EINTRLOOP(rs, close(s));
+				errno = EINVAL;
+				return -1;
+			}
+			memset(&sa, 0, sizeof sa);
+			sa.sin_family = AF_INET;
+			memcpy(&sa.sin_addr.s_addr, addr, 4);
+			sa.sin_port = htons(0);
+			EINTRLOOP(rs, bind(s, (struct sockaddr *)(void *)&sa, sizeof sa));
+			if (rs) {
+				int sv_errno = errno;
+				EINTRLOOP(rs, close(s));
+				errno = sv_errno;
+				return -1;
+			}
+			break;
+		}
+#ifdef SUPPORT_IPV6
+		case PF_INET6: {
+			struct sockaddr_in6 sa;
+			unsigned char addr[16];
+			unsigned scope;
+			if (numeric_ipv6_address(address, addr, &scope) == -1) {
+				EINTRLOOP(rs, close(s));
+				errno = EINVAL;
+				return -1;
+			}
+			memset(&sa, 0, sizeof sa);
+			sa.sin6_family = AF_INET6;
+			memcpy(&sa.sin6_addr, addr, 16);
+			sa.sin6_port = htons(0);
+#ifdef SUPPORT_IPV6_SCOPE
+			sa.sin6_scope_id = scope;
+#endif
+			EINTRLOOP(rs, bind(s, (struct sockaddr *)(void *)&sa, sizeof sa));
+			if (rs) {
+				int sv_errno = errno;
+				EINTRLOOP(rs, close(s));
+				errno = sv_errno;
+				return -1;
+			}
+			break;
+		}
+#endif
+		default: {
+			EINTRLOOP(rs, close(s));
+			errno = EINVAL;
+			return -1;
+		}
+		}
+	}
+	return s;
+}
+
 void close_socket(int *s)
 {
+	int rs;
 	if (*s == -1) return;
-	close(*s);
+	EINTRLOOP(rs, close(*s));
 	set_handlers(*s, NULL, NULL, NULL, NULL);
 	*s = -1;
 }
 
 struct conn_info {
 	void (*func)(struct connection *);
-	struct sockaddr_in sa;
-	ip__address addr;
+	struct lookup_result addr;
+	int addr_index;
+	int first_error;
 	int port;
 	int *sock;
 	int real_port;
 	int socks_byte_count;
 	unsigned char socks_reply[8];
-	unsigned char dns_append[1];
+	unsigned char *host;
+	unsigned char *dns_append;
 };
 
 void make_connection(struct connection *c, int port, int *sock, void (*func)(struct connection *))
 {
 	int real_port = -1;
 	int as;
-	unsigned char *dns_append = "";
+	unsigned char *dns_append = cast_uchar "";
 	unsigned char *host;
 	struct conn_info *b;
 	if (*c->socks_proxy) {
-		unsigned char *p = strchr(c->socks_proxy, '@');
+		unsigned char *p = cast_uchar strchr(cast_const_char c->socks_proxy, '@');
 		if (p) p++;
 		else p = c->socks_proxy;
 		host = stracpy(p);
 		real_port = port;
 		port = 1080;
-		if ((p = strchr(host, ':'))) {
+		if ((p = cast_uchar strchr(cast_const_char host, ':'))) {
 			*p++ = 0;
 			if (!*p) goto badu;
-			port = strtoul(p, (char **)(void *)&p, 10);
+			port = strtoul(cast_const_char p, (char **)(void *)&p, 10);
 			if (*p) {
 				badu:
 				mem_free(host);
@@ -95,50 +168,139 @@ void make_connection(struct connection *c, int port, int *sock, void (*func)(str
 	}
 	if (c->newconn)
 		internal("already making a connection");
-	b = mem_alloc(sizeof(struct conn_info) + strlen(dns_append));
+	b = mem_calloc(sizeof(struct conn_info) + strlen(cast_const_char host) + 1 + strlen(cast_const_char dns_append) + 1);
 	b->func = func;
 	b->sock = sock;
 	b->port = port;
 	b->real_port = real_port;
-	b->socks_byte_count = 0;
-	strcpy(b->dns_append, dns_append);
+	b->host = (unsigned char *)(b + 1);
+	strcpy(cast_char b->host, cast_const_char host);
+	b->dns_append = cast_uchar strchr(cast_const_char b->host, 0) + 1;
+	strcpy(cast_char b->dns_append, cast_const_char dns_append);
 	c->newconn = b;
-	log_data("\nCONNECTION: ", 13);
-	log_data(host, strlen(host));
-	log_data("\n", 1);
+	log_data(cast_uchar "\nCONNECTION: ", 13);
+	log_data(host, strlen(cast_const_char host));
+	log_data(cast_uchar "\n", 1);
 	if (c->no_cache >= NC_RELOAD) as = find_host_no_cache(host, &b->addr, &c->dnsquery, (void(*)(void *, int))dns_found, c);
 	else as = find_host(host, &b->addr, &c->dnsquery, (void(*)(void *, int))dns_found, c);
 	mem_free(host);
 	if (as) setcstate(c, S_DNS);
 }
 
+int is_ipv6(int h)
+{
+#ifdef SUPPORT_IPV6
+	union {
+		struct sockaddr sa;
+		struct sockaddr_in sin;
+		struct sockaddr_in6 sin6;
+		char pad[128];
+	} u;
+	socklen_t len = sizeof(u);
+	int rs;
+	EINTRLOOP(rs, getsockname(h, &u.sa, &len));
+	if (rs) return 0;
+	return u.sa.sa_family == AF_INET6;
+#else
+	return 0;
+#endif
+}
+
 int get_pasv_socket(struct connection *c, int cc, int *sock, unsigned char *port)
 {
 	int s;
+	int rs;
 	struct sockaddr_in sa;
 	struct sockaddr_in sb;
 	socklen_t len = sizeof(sa);
 	memset(&sa, 0, sizeof sa);
 	memset(&sb, 0, sizeof sb);
-	if (getsockname(cc, (struct sockaddr *)(void *)&sa, &len)) {
-		e:
-		setcstate(c, get_error_from_errno(errno));
-		retry_connection(c);
-		return -1;
+	EINTRLOOP(rs, getsockname(cc, (struct sockaddr *)(void *)&sa, &len));
+	if (rs) goto e;
+	if (sa.sin_family != AF_INET) {
+		errno = EINVAL;
+		goto e;
 	}
-	if ((s = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) goto e;
+	EINTRLOOP(s, socket(PF_INET, SOCK_STREAM, IPPROTO_TCP));
+	if (s == -1) goto e;
 	*sock = s;
-	fcntl(s, F_SETFL, O_NONBLOCK);
+	EINTRLOOP(rs, fcntl(s, F_SETFL, O_NONBLOCK));
 	memcpy(&sb, &sa, sizeof(struct sockaddr_in));
-	sb.sin_port = 0;
-	if (bind(s, (struct sockaddr *)(void *)&sb, sizeof sb)) goto e;
+	sb.sin_port = htons(0);
+	EINTRLOOP(rs, bind(s, (struct sockaddr *)(void *)&sb, sizeof sb));
+	if (rs) goto e;
 	len = sizeof(sa);
-	if (getsockname(s, (struct sockaddr *)(void *)&sa, &len)) goto e;
-	if (listen(s, 1)) goto e;
+	EINTRLOOP(rs, getsockname(s, (struct sockaddr *)(void *)&sa, &len));
+	if (rs) goto e;
+	EINTRLOOP(rs, listen(s, 1));
+	if (rs) goto e;
 	memcpy(port, &sa.sin_addr.s_addr, 4);
 	memcpy(port + 4, &sa.sin_port, 2);
 	return 0;
+
+	e:
+	setcstate(c, get_error_from_errno(errno));
+	retry_connection(c);
+	return -1;
 }
+
+#ifdef SUPPORT_IPV6
+
+int get_pasv_socket_ipv6(struct connection *c, int cc, int *sock, unsigned char *result)
+{
+	int s;
+	int rs;
+	struct sockaddr_in6 sa;
+	struct sockaddr_in6 sb;
+	socklen_t len = sizeof(sa);
+	memset(&sa, 0, sizeof sa);
+	memset(&sb, 0, sizeof sb);
+	EINTRLOOP(rs, getsockname(cc, (struct sockaddr *)(void *)&sa, &len));
+	if (rs) goto e;
+	if (sa.sin6_family != AF_INET6) {
+		errno = EINVAL;
+		goto e;
+	}
+	EINTRLOOP(s, socket(PF_INET6, SOCK_STREAM, IPPROTO_TCP));
+	if (s == -1) goto e;
+	*sock = s;
+	EINTRLOOP(rs, fcntl(s, F_SETFL, O_NONBLOCK));
+	memcpy(&sb, &sa, sizeof(struct sockaddr_in6));
+	sb.sin6_port = htons(0);
+	EINTRLOOP(rs, bind(s, (struct sockaddr *)(void *)&sb, sizeof sb));
+	if (rs) goto e;
+	len = sizeof(sa);
+	EINTRLOOP(rs, getsockname(s, (struct sockaddr *)(void *)&sa, &len));
+	if (rs) goto e;
+	EINTRLOOP(rs, listen(s, 1));
+	if (rs) goto e;
+	sprintf(cast_char result, "|2|%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x|%d|",
+		sa.sin6_addr.s6_addr[0],
+		sa.sin6_addr.s6_addr[1],
+		sa.sin6_addr.s6_addr[2],
+		sa.sin6_addr.s6_addr[3],
+		sa.sin6_addr.s6_addr[4],
+		sa.sin6_addr.s6_addr[5],
+		sa.sin6_addr.s6_addr[6],
+		sa.sin6_addr.s6_addr[7],
+		sa.sin6_addr.s6_addr[8],
+		sa.sin6_addr.s6_addr[9],
+		sa.sin6_addr.s6_addr[10],
+		sa.sin6_addr.s6_addr[11],
+		sa.sin6_addr.s6_addr[12],
+		sa.sin6_addr.s6_addr[13],
+		sa.sin6_addr.s6_addr[14],
+		sa.sin6_addr.s6_addr[15],
+		htons(sa.sin6_port) & 0xffff);
+	return 0;
+
+	e:
+	setcstate(c, get_error_from_errno(errno));
+	retry_connection(c);
+	return -1;
+}
+
+#endif
 
 #ifdef HAVE_SSL
 static void ssl_want_read(struct connection *c)
@@ -180,12 +342,12 @@ static void handle_socks(struct connection *c)
 	int wr;
 	setcstate(c, S_SOCKS_NEG);
 	set_timeout(c);
-	add_bytes_to_str(&command, &len, "\004\001", 2);
+	add_bytes_to_str(&command, &len, cast_uchar "\004\001", 2);
 	add_chr_to_str(&command, &len, b->real_port >> 8);
 	add_chr_to_str(&command, &len, b->real_port);
-	add_bytes_to_str(&command, &len, "\000\000\000\001", 4);
-	if (strchr(c->socks_proxy, '@'))
-		add_bytes_to_str(&command, &len, c->socks_proxy, strcspn(c->socks_proxy, "@"));
+	add_bytes_to_str(&command, &len, cast_uchar "\000\000\000\001", 4);
+	if (strchr(cast_const_char c->socks_proxy, '@'))
+		add_bytes_to_str(&command, &len, c->socks_proxy, strcspn(cast_const_char c->socks_proxy, "@"));
 	add_chr_to_str(&command, &len, 0);
 	if (!(host = get_host_name(c->url))) {
 		mem_free(command);
@@ -203,7 +365,7 @@ static void handle_socks(struct connection *c)
 		retry_connection(c);
 		return;
 	}
-	wr = write(*b->sock, command + b->socks_byte_count, len - b->socks_byte_count);
+	EINTRLOOP(wr, write(*b->sock, command + b->socks_byte_count, len - b->socks_byte_count));
 	mem_free(command);
 	if (wr <= 0) {
 		setcstate(c, wr ? get_error_from_errno(errno) : S_CANT_WRITE);
@@ -226,7 +388,7 @@ static void handle_socks_reply(struct connection *c)
 	struct conn_info *b = c->newconn;
 	int rd;
 	set_timeout(c);
-	rd = read(*b->sock, b->socks_reply + b->socks_byte_count, sizeof b->socks_reply - b->socks_byte_count);
+	EINTRLOOP(rd, read(*b->sock, b->socks_reply + b->socks_byte_count, sizeof b->socks_reply - b->socks_byte_count));
 	if (rd <= 0) {
 		setcstate(c, rd ? get_error_from_errno(errno) : S_CANT_READ);
 		retry_connection(c);
@@ -266,38 +428,98 @@ static void handle_socks_reply(struct connection *c)
 
 static void dns_found(struct connection *c, int state)
 {
-	int s;
-	struct conn_info *b = c->newconn;
 	if (state) {
 		setcstate(c, S_NO_DNS);
 		abort_connection(c);
 		return;
 	}
-	if ((s = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
-		setcstate(c, get_error_from_errno(errno));
+	try_connect(c);
+}
+
+static void retry_connect(struct connection *c, int err)
+{
+	struct conn_info *b = c->newconn;
+	if (!b->addr_index) b->first_error = err;
+	b->addr_index++;
+	if (b->addr_index < b->addr.n) {
+		close_socket(b->sock);
+		try_connect(c);
+	} else {
+		setcstate(c, b->first_error);
 		retry_connection(c);
+	}
+}
+
+static void try_connect(struct connection *c)
+{
+	int s;
+	int rs;
+	struct conn_info *b = c->newconn;
+	struct host_address *addr = &b->addr.a[b->addr_index];
+	if (addr->af == AF_INET) {
+		s = socket_and_bind(PF_INET, bind_ip_address);
+#ifdef SUPPORT_IPV6
+	} else if (addr->af == AF_INET6) {
+		s = socket_and_bind(PF_INET6, bind_ipv6_address);
+#endif
+	} else {
+		setcstate(c, S_INTERNAL);
+		abort_connection(c);
 		return;
 	}
+	if (s == -1) {
+		retry_connect(c, get_error_from_errno(errno));
+		return;
+	}
+	EINTRLOOP(rs, fcntl(s, F_SETFL, O_NONBLOCK));
 	*b->sock = s;
-	fcntl(s, F_SETFL, O_NONBLOCK);
-	memset(&b->sa, 0, sizeof(struct sockaddr_in));
-	b->sa.sin_family = AF_INET;
-	b->sa.sin_addr.s_addr = b->addr;
-	b->sa.sin_port = htons(b->port);
-	if (connect(s, (struct sockaddr *)(void *)&b->sa, sizeof b->sa)) {
+	if (addr->af == AF_INET) {
+		struct sockaddr_in sa;
+		memset(&sa, 0, sizeof sa);
+		sa.sin_family = AF_INET;
+		memcpy(&sa.sin_addr.s_addr, addr->addr, 4);
+		sa.sin_port = htons(b->port);
+		EINTRLOOP(rs, connect(s, (struct sockaddr *)(void *)&sa, sizeof sa));
+#ifdef SUPPORT_IPV6
+	} else if (addr->af == AF_INET6) {
+		struct sockaddr_in6 sa;
+		memset(&sa, 0, sizeof sa);
+		sa.sin6_family = AF_INET6;
+		memcpy(&sa.sin6_addr, addr->addr, 16);
+#ifdef SUPPORT_IPV6_SCOPE
+		sa.sin6_scope_id = addr->scope_id;
+#endif
+		sa.sin6_port = htons(b->port);
+		EINTRLOOP(rs, connect(s, (struct sockaddr *)(void *)&sa, sizeof sa));
+#endif
+	}
+	if (rs) {
 		if (errno != EALREADY && errno != EINPROGRESS) {
 #ifdef BEOS
 			if (errno == EWOULDBLOCK) errno = ETIMEDOUT;
 #endif
-			setcstate(c, get_error_from_errno(errno));
-			retry_connection(c);
+			retry_connect(c, get_error_from_errno(errno));
 			return;
 		}
 		set_handlers(s, NULL, (void(*)(void *))connected, (void(*)(void *))exception, c);
-		setcstate(c, S_CONN);
+		setcstate(c, !b->addr_index ? S_CONN : S_CONN_ANOTHER);
 	} else {
 		connected(c);
 	}
+}
+
+void continue_connection(struct connection *c, int *sock, void (*func)(struct connection *))
+{
+	struct conn_info *b;
+	if (c->newconn)
+		internal("already making a connection");
+	b = mem_calloc(sizeof(struct conn_info));
+	b->func = func;
+	b->sock = sock;
+	b->real_port = -1;
+	c->newconn = b;
+	log_data(cast_uchar "\nCONTINUE CONNECTION\n", 21);
+	connected(c);
 }
 
 static void connected(struct connection *c)
@@ -305,17 +527,26 @@ static void connected(struct connection *c)
 	struct conn_info *b = c->newconn;
 	int err = 0;
 	socklen_t len = sizeof(int);
-	if (getsockopt(*b->sock, SOL_SOCKET, SO_ERROR, (void *)&err, &len))
+	int rs;
+	errno = 0;
+	EINTRLOOP(rs, getsockopt(*b->sock, SOL_SOCKET, SO_ERROR, (void *)&err, &len));
+	if (!rs) {
+		if (err >= 10000) err -= 10000;	/* Why does EMX return so large values? */
+	} else {
 		if (!(err = errno)) {
-			err = -(S_STATE);
-			goto bla;
+			retry_connect(c, S_STATE);
+			return;
 		}
-	if (err >= 10000) err -= 10000;	/* Why does EMX return so large values? */
+	}
 	if (err > 0) {
-		bla:
-		setcstate(c, get_error_from_errno(err));
-		retry_connection(c);
+		retry_connect(c, get_error_from_errno(err));
 		return;
+	}
+	if (b->addr_index) {
+		int i;
+		for (i = 0; i < b->addr_index; i++)
+			dns_set_priority(b->host, &b->addr.a[i], 0);
+		dns_set_priority(b->host, &b->addr.a[i], 1);
 	}
 	set_timeout(c);
 	if (b->real_port != -1) {
@@ -394,7 +625,9 @@ static void write_select(struct connection *c)
 		}
 	} else
 #endif
-		if ((wr = write(wb->sock, wb->data + wb->pos, wb->len - wb->pos)) <= 0) {
+	{
+		EINTRLOOP(wr, write(wb->sock, wb->data + wb->pos, wb->len - wb->pos));
+		if (wr <= 0) {
 #ifdef ATHEOS
 	/* Workaround for a bug in Syllable */
 			if (wr && errno == EAGAIN) {
@@ -405,8 +638,8 @@ static void write_select(struct connection *c)
 			retry_connection(c);
 			return;
 		}
+	}
 
-	/*printf("wr: %d\n", wr);*/
 	if ((wb->pos += wr) == wb->len) {
 		void (*f)(struct connection *) = wb->done;
 		c->buffer = NULL;
@@ -470,7 +703,9 @@ static void read_select(struct connection *c)
 		}
 	} else
 #endif
-		if ((rd = read(rb->sock, rb->data + rb->len, READ_SIZE)) <= 0) {
+	{
+		EINTRLOOP(rd, read(rb->sock, rb->data + rb->len, READ_SIZE));
+		if (rd <= 0) {
 			if (rb->close && !rd) {
 				rb->close = 2;
 				rb->done(c, rb);
@@ -483,7 +718,7 @@ static void read_select(struct connection *c)
 */
 				unsigned char *prot, *h;
 				if (is_last_try(c) && (prot = get_protocol_name(c->url))) {
-					if (!strcasecmp(prot, "http")) {
+					if (!strcasecmp(cast_const_char prot, "http")) {
 						if ((h = get_host_name(c->url))) {
 							add_blacklist_entry(h, BL_NO_COMPRESSION);
 							mem_free(h);
@@ -497,6 +732,7 @@ static void read_select(struct connection *c)
 			retry_connection(c);
 			return;
 		}
+	}
 	log_data(rb->data + rb->len, rd);
 	rb->len += rd;
 	rb->done(c, rb);

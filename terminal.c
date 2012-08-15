@@ -14,10 +14,9 @@ int hard_write(int fd, unsigned char *p, int l)
 	int w = 1;
 	int t = 0;
 	while (l > 0 && w) {
-		if ((w = write(fd, p, l)) < 0) {
-			if (errno == EINTR) continue;
+		EINTRLOOP(w, write(fd, p, l));
+		if (w < 0)
 			return -1;
-		}
 		t += w;
 		p += w;
 		l -= w;
@@ -30,11 +29,9 @@ int hard_read(int fd, unsigned char *p, int l)
 	int r = 1;
 	int t = 0;
 	while (l > 0 && r) {
-		if ((r = read(fd, p, l)) < 0) {
-			if (errno == EINTR) continue;
+		EINTRLOOP(r, read(fd, p, l));
+		if (r < 0)
 			return -1;
-		}
-		/*{int ww;for(ww=0;ww<r;ww++)fprintf(stderr," %02x",(int)p[ww]);fflush(stderr);}*/
 		t += r;
 		p += r;
 		l -= r;
@@ -46,24 +43,24 @@ unsigned char *get_cwd(void)
 {
 	int bufsize = 128;
 	unsigned char *buf;
+	unsigned char *gcr;
 	while (1) {
 		buf = mem_alloc(bufsize);
-		if (getcwd(buf, bufsize)) return buf;
+		ENULLLOOP(gcr, cast_uchar getcwd(cast_char buf, bufsize));
+		if (gcr) return buf;
 		mem_free(buf);
-		if (errno == EINTR) continue;
 		if (errno != ERANGE) return NULL;
 		if ((unsigned)bufsize > MAXINT - 128) overalloc();
 		bufsize += 128;
 	}
-	return NULL;
+	not_reached(return NULL;)
 }
 
 void set_cwd(unsigned char *path)
 {
-	if (path) {
-		while (chdir(path) && errno == EINTR)
-			;
-	}
+	int rs;
+	if (path)
+		EINTRLOOP(rs, chdir(cast_const_char path));
 }
 
 struct list_head terminals = {&terminals, &terminals};
@@ -141,7 +138,7 @@ static void erase_screen(struct terminal *term)
 	NO_GFX;
 	if (!term->master || !is_blocked()) {
 		if (term->master) want_draw();
-		hard_write(term->fdout, "\033[2J\033[1;1H", 10);
+		hard_write(term->fdout, cast_uchar "\033[2J\033[1;1H", 10);
 		if (term->master) done_draw();
 	}
 }
@@ -500,17 +497,17 @@ static struct term_spec *get_term_spec(unsigned char *term)
 {
 	struct term_spec *t;
 	NO_GFX;
-	foreach(t, term_specs) if (!strcasecmp(t->term, term)) return t;
+	foreach(t, term_specs) if (!strcasecmp(cast_const_char t->term, cast_const_char term)) return t;
 	return &dumb_term;
 }
 
 struct term_spec *new_term_spec(unsigned char *term)
 {
 	struct term_spec *t;
-	foreach(t, term_specs) if (!strcasecmp(t->term, term)) return t;
+	foreach(t, term_specs) if (!strcasecmp(cast_const_char t->term, cast_const_char term)) return t;
 	t = mem_alloc(sizeof(struct term_spec));
 	memcpy(t, &dumb_term, sizeof(struct term_spec));
-	if (strlen(term) < MAX_TERM_LEN) strcpy(t->term, term);
+	if (strlen(cast_const_char term) < MAX_TERM_LEN) strcpy(cast_char t->term, cast_const_char term);
 	else memcpy(t->term, term, MAX_TERM_LEN - 1), t->term[MAX_TERM_LEN - 1] = 0;
 	add_to_list(term_specs, t);
 	sync_term_specs();
@@ -565,9 +562,9 @@ static int process_utf_8(struct terminal *term, struct event *ev)
 		unsigned char *p;
 		unsigned c;
 		if (ev->x <= 0 || ev->x >= 0x100) goto direct;
-		if ((l = strlen(term->utf8_buffer)) >= sizeof(term->utf8_buffer) - 1 || ev->x < 0x80 || ev->x >= 0xc0)
+		if ((l = strlen(cast_const_char term->utf8_buffer)) >= sizeof(term->utf8_buffer) - 1 || ev->x < 0x80 || ev->x >= 0xc0)
 			term->utf8_buffer[0] = 0, l = 0;
-		term->utf8_buffer[l] = ev->x;
+		term->utf8_buffer[l] = (unsigned char)ev->x;
 		term->utf8_buffer[l + 1] = 0;
 		p = term->utf8_buffer;
 		GET_UTF_8(p, c);
@@ -607,13 +604,13 @@ struct terminal *init_gfx_term(void (*root_window)(struct window *, struct event
 	term->y = dev->size.y2;
 	term->last_mouse_x = term->last_mouse_y = term->last_mouse_b = MAXINT;
 	term->environment = !(drv->flags & GD_ONLY_1_WINDOW) ? ENV_G : 0;
-	if (!strcasecmp(drv->name, "x")) term->environment |= ENV_XWIN;
+	if (!strcasecmp(cast_const_char drv->name, "x")) term->environment |= ENV_XWIN;
 	term->spec = &gfx_term;
 	if ((cwd = get_cwd())) {
 		safe_strncpy(term->cwd, cwd, MAX_CWD_LEN);
 		mem_free(cwd);
 	}
-	gfx_term.charset = get_cp_index("utf-8");
+	gfx_term.charset = utf8_table;
 	if (gfx_term.charset == -1) gfx_term.charset = 0;
 	init_list(term->windows);
 	win = mem_calloc(sizeof (struct window));
@@ -726,7 +723,8 @@ static void in_term(struct terminal *term)
 	if ((unsigned)term->qlen + ALLOC_GR > MAXINT) overalloc();
 	iq = mem_realloc(term->input_queue, term->qlen + ALLOC_GR);
 	term->input_queue = iq;
-	if ((r = read(term->fdin, iq + term->qlen, ALLOC_GR)) <= 0) {
+	EINTRLOOP(r, read(term->fdin, iq + term->qlen, ALLOC_GR));
+	if (r <= 0) {
 		if (r == -1 && errno != ECONNRESET) error("ERROR: error %d on terminal: could not read event", errno);
 		destroy_terminal(term);
 		return;
@@ -737,7 +735,7 @@ static void in_term(struct terminal *term)
 	ev = (struct event *)iq;
 	r = sizeof(struct event);
 	if (ev->ev != EV_INIT && ev->ev != EV_RESIZE && ev->ev != EV_REDRAW && ev->ev != EV_KBD && ev->ev != EV_MOUSE && ev->ev != EV_ABORT) {
-		error("ERROR: error on terminal: bad event %d", ev->ev);
+		error("ERROR: error on terminal: bad event %ld", ev->ev);
 		goto mm;
 	}
 	if (ev->ev == EV_INIT) {
@@ -824,7 +822,7 @@ static unsigned char frame_restrict[48] = {
 	179,  0,  0,  0,  0,  0,  0,  0,
 };
 
-#ifdef WIN32
+#if defined(ENABLE_UTF8) && defined(WIN32)
 static inline char_t utf8_hack(char_t c)
 {
 	/*
@@ -849,11 +847,11 @@ static inline char_t utf8_hack(char_t c)
 
 #define SETPOS(x, y)							\
 {									\
-	add_to_str(&a, &l, "\033[");					\
+	add_to_str(&a, &l, cast_uchar "\033[");				\
 	add_num_to_str(&a, &l, (y) + 1);				\
-	add_to_str(&a, &l, ";");					\
+	add_to_str(&a, &l, cast_uchar ";");				\
 	add_num_to_str(&a, &l, (x) + 1);				\
-	add_to_str(&a, &l, "H");					\
+	add_to_str(&a, &l, cast_uchar "H");				\
 }
 
 #define PRINT_CHAR(p)							\
@@ -864,8 +862,8 @@ static inline char_t utf8_hack(char_t c)
 	if (s->mode == TERM_LINUX) {					\
 		if (s->m11_hack) {					\
 			if (frm != mode) {				\
-				if (!(mode = frm)) add_to_str(&a, &l, "\033[10m");\
-				else add_to_str(&a, &l, "\033[11m");	\
+				if (!(mode = frm)) add_to_str(&a, &l, cast_uchar "\033[10m");\
+				else add_to_str(&a, &l, cast_uchar "\033[11m");\
 			}						\
 		}							\
 		if (s->restrict_852 && frm && c >= 176 && c < 224) {	\
@@ -873,8 +871,8 @@ static inline char_t utf8_hack(char_t c)
 		}							\
 	} else if (s->mode == TERM_VT100) {				\
 		if (frm != mode) {					\
-			if (!(mode = frm)) add_to_str(&a, &l, "\017");	\
-			else add_to_str(&a, &l, "\016");		\
+			if (!(mode = frm)) add_to_str(&a, &l, cast_uchar "\017");\
+			else add_to_str(&a, &l, cast_uchar "\016");	\
 		}							\
 		if (frm && c >= 176 && c < 224) c = frame_vt100[c - 176];\
 	} else if (s->mode == TERM_KOI8 && frm && c >= 176 && c < 224) { c = frame_koi[c - 176];\
@@ -883,7 +881,7 @@ static inline char_t utf8_hack(char_t c)
 	if (!(A & 0100) && (A >> 3) == (A & 7)) A = (A & 070) | 7 * !(A & 020);\
 	if (A != attrib) {						\
 		attrib = A;						\
-		add_to_str(&a, &l, "\033[0");				\
+		add_to_str(&a, &l, cast_uchar "\033[0");		\
 		if (s->col) {						\
 			unsigned char m[4];				\
 			m[0] = ';'; m[1] = '3'; m[3] = 0;		\
@@ -893,12 +891,12 @@ static inline char_t utf8_hack(char_t c)
 			m[2] = ((attrib >> 3) & 7) + '0';		\
 			add_to_str(&a, &l, m);				\
 		} else if (getcompcode(attrib & 7) < getcompcode(attrib >> 3 & 7))\
-			add_to_str(&a, &l, ";7");			\
-		if (attrib & 0100) add_to_str(&a, &l, ";1");		\
-		add_to_str(&a, &l, "m");				\
+			add_to_str(&a, &l, cast_uchar ";7");		\
+		if (attrib & 0100) add_to_str(&a, &l, cast_uchar ";1");	\
+		add_to_str(&a, &l, cast_uchar "m");			\
 	}								\
 	if (c >= ' ' && c != 127/* && c != 155*/) {			\
-		if (c < 128 || frm || !is_cp_special(term->spec->charset)) {\
+		if (c < 128 || frm || term->spec->charset != utf8_table) {\
 			add_chr_to_str(&a, &l, c);			\
 		} else {						\
 		/*							\
@@ -910,7 +908,7 @@ static inline char_t utf8_hack(char_t c)
 			unsigned char *r;				\
 			c = utf8_hack(c);				\
 			r = u2cp(c, 0, 1);				\
-			if (!(r && r[0] >= 32 && r[0] < 127 && !r[1])) r = "*";	\
+			if (!(r && r[0] >= 32 && r[0] < 127 && !r[1])) r = cast_uchar "*";\
 			add_chr_to_str(&a, &l, r[0]);			\
 			if (cx + 1 < term->x)				\
 				add_chr_to_str(&a, &l, 8);		\
@@ -949,7 +947,7 @@ void redraw_screen(struct terminal *term)
 			int i;
 			if (y == term->y - 1 && x == term->x - 1) break;
 			if (!memcmp(&term->screen[p], &term->last_screen[p], sizeof(chr))) continue;
-			if ((term->screen[p].at & 0x38) == (term->last_screen[p].at & 0x38) && (term->screen[p].ch == 0 || term->screen[p].ch == 1 || term->screen[p].ch == ' ') && (term->last_screen[p].ch == 0 || term->last_screen[p].ch == 1 || term->last_screen[p].ch == ' ') && (x != term->cx || y != term->cy)) continue;
+			/*if ((term->screen[p].at & 0x38) == (term->last_screen[p].at & 0x38) && (term->screen[p].ch == 0 || term->screen[p].ch == 1 || term->screen[p].ch == ' ') && (term->last_screen[p].ch == 0 || term->last_screen[p].ch == 1 || term->last_screen[p].ch == ' ') && (x != term->cx || y != term->cy)) continue;*/
 			memcpy(&term->last_screen[p], &term->screen[p], sizeof(chr));
 			if (cx == x && cy == y) goto pc;/*PRINT_CHAR(p)*/
 			else if (cy == y && x - cx < 10 && x - cx > 0) {
@@ -966,21 +964,21 @@ void redraw_screen(struct terminal *term)
 			}
 		}
 	if (l) {
-		if (s->col) add_to_str(&a, &l, "\033[37;40m");
-		add_to_str(&a, &l, "\033[0m");
-		if (s->mode == TERM_LINUX && s->m11_hack) add_to_str(&a, &l, "\033[10m");
-		if (s->mode == TERM_VT100) add_to_str(&a, &l, "\017");
+		if (s->col) add_to_str(&a, &l, cast_uchar "\033[37;40m");
+		add_to_str(&a, &l, cast_uchar "\033[0m");
+		if (s->mode == TERM_LINUX && s->m11_hack) add_to_str(&a, &l, cast_uchar "\033[10m");
+		if (s->mode == TERM_VT100) add_to_str(&a, &l, cast_uchar "\017");
 	}
 	term->lcx = cx;
 	term->lcy = cy;
 	if (term->cx != term->lcx || term->cy != term->lcy) {
 		term->lcx = term->cx;
 		term->lcy = term->cy;
-		add_to_str(&a, &l, "\033[");
+		add_to_str(&a, &l, cast_uchar "\033[");
 		add_num_to_str(&a, &l, term->cy + 1);
-		add_to_str(&a, &l, ";");
+		add_to_str(&a, &l, cast_uchar ";");
 		add_num_to_str(&a, &l, term->cx + 1);
-		add_to_str(&a, &l, "H");
+		add_to_str(&a, &l, cast_uchar "H");
 	}
 	if (l && term->master) want_draw();
 	hard_write(term->fdout, a, l);
@@ -991,11 +989,13 @@ void redraw_screen(struct terminal *term)
 
 void destroy_terminal(struct terminal *term)
 {
+	int rs;
+	unregister_bottom_half((void (*)(void *))destroy_terminal, term);
 	while ((term->windows.next) != &term->windows) delete_window(term->windows.next);
 	/*if (term->cwd) mem_free(term->cwd);*/
 	del_from_list(term);
 	if (term->blocked != -1) {
-		close(term->blocked);
+		EINTRLOOP(rs, close(term->blocked));
 		set_handlers(term->blocked, NULL, NULL, NULL, NULL);
 	}
 	if (term->title) mem_free(term->title);
@@ -1004,15 +1004,18 @@ void destroy_terminal(struct terminal *term)
 		mem_free(term->last_screen);
 		set_handlers(term->fdin, NULL, NULL, NULL, NULL);
 		mem_free(term->input_queue);
-		close(term->fdin);
-		if (term->fdout != 1) {
-			if (term->fdout != term->fdin) close(term->fdout);
+		EINTRLOOP(rs, close(term->fdin));
+		if (!term->master) {
+			if (term->fdout != term->fdin)
+				EINTRLOOP(rs, close(term->fdout));
 		} else {
 			unhandle_terminal_signals(term);
 			free_all_itrms();
 #ifndef NO_FORK_ON_EXIT
 			if (!list_empty(terminals)) {
-				if (fork() > 0) _exit(0);
+				pid_t rp;
+				EINTRLOOP(rp, fork());
+				if (rp > 0) _exit(0);
 			}
 #endif
 		}
@@ -1160,18 +1163,21 @@ void set_cursor(struct terminal *term, int x, int y, int altx, int alty)
 
 void exec_thread(unsigned char *path, int p)
 {
-#if defined(HAVE_SETPGID) && !defined(BEOS) && !defined(HAVE_BEGINTHREAD)
-	if (path[0] == 2) setpgid(0, 0);
+	int rs;
+#if defined(HAVE_SETPGID) && !defined(EXEC_IN_THREADS)
+	if (path[0] == 2)
+		EINTRLOOP(rs, setpgid(0, 0));
 #endif
 	exe(path + 1, path[0]);
-	/*close(p);*/
-	if (path[1 + strlen(path + 1) + 1]) unlink(path + 1 + strlen(path + 1) + 1);
+	if (path[1 + strlen(cast_const_char(path + 1)) + 1])
+		EINTRLOOP(rs, unlink(cast_const_char(path + 1 + strlen(cast_const_char(path + 1)) + 1)));
 }
 
 void close_handle(void *p)
 {
 	long h = (my_intptr_t)p;
-	close(h);
+	int rs;
+	EINTRLOOP(rs, close(h));
 	set_handlers(h, NULL, NULL, NULL, NULL);
 }
 
@@ -1192,8 +1198,9 @@ static void unblock_terminal(struct terminal *term)
 
 void exec_on_terminal(struct terminal *term, unsigned char *path, unsigned char *delete, int fg)
 {
+	int rs;
 	if (path && !*path) return;
-	if (!path) path="";
+	if (!path) path = cast_uchar "";
 #ifdef NO_FG_EXEC
 	fg = 0;
 #endif
@@ -1204,24 +1211,24 @@ void exec_on_terminal(struct terminal *term, unsigned char *path, unsigned char 
 			long blockh;
 			unsigned char *param;
 			if ((!F ? is_blocked() : term->blocked != -1) && fg) {
-				unlink(delete);
+				EINTRLOOP(rs, unlink(cast_const_char delete));
 				return;
 			}
-			param = mem_alloc(strlen(path) + strlen(delete) + 3);
+			param = mem_alloc(strlen(cast_const_char path) + strlen(cast_const_char delete) + 3);
 			param[0] = fg;
-			strcpy(param + 1, path);
-			strcpy(param + 1 + strlen(path) + 1, delete);
+			strcpy(cast_char(param + 1), cast_const_char path);
+			strcpy(cast_char(param + 1 + strlen(cast_const_char path) + 1), cast_const_char delete);
 			if (fg == 1) {
 				if (!F) block_itrm(term->fdin);
 #ifdef G
 				else if (drv->block(term->dev)) {
 					mem_free(param);
-					unlink(delete);
+					EINTRLOOP(rs, unlink(cast_const_char delete));
 					return;
 				}
 #endif
 			}
-			if ((blockh = start_thread((void (*)(void *, int))exec_thread, param, strlen(path) + strlen(delete) + 3)) == -1) {
+			if ((blockh = start_thread((void (*)(void *, int))exec_thread, param, strlen(cast_const_char path) + strlen(cast_const_char delete) + 3)) == -1) {
 				if (fg == 1) {
 					if (!F) unblock_itrm(term->fdin);
 #ifdef G
@@ -1243,19 +1250,13 @@ void exec_on_terminal(struct terminal *term, unsigned char *path, unsigned char 
 		}
 	} else {
 		unsigned char *data;
-		data = mem_alloc(strlen(path) + strlen(delete) + 4);
+		data = mem_alloc(strlen(cast_const_char path) + strlen(cast_const_char delete) + 4);
 		data[0] = 0;
 		data[1] = fg;
-		strcpy(data + 2, path);
-		strcpy(data + 3 + strlen(path), delete);
-		hard_write(term->fdout, data, strlen(path) + strlen(delete) + 4);
+		strcpy(cast_char(data + 2), cast_const_char path);
+		strcpy(cast_char(data + 3 + strlen(cast_const_char path)), cast_const_char delete);
+		hard_write(term->fdout, data, strlen(cast_const_char path) + strlen(cast_const_char delete) + 4);
 		mem_free(data);
-		/*char x = 0;
-		hard_write(term->fdout, &x, 1);
-		x = fg;
-		hard_write(term->fdout, &x, 1);
-		hard_write(term->fdout, path, strlen(path) + 1);
-		hard_write(term->fdout, delete, strlen(delete) + 1);*/
 	}
 }
 
@@ -1263,9 +1264,9 @@ void do_terminal_function(struct terminal *term, unsigned char code, unsigned ch
 {
 	unsigned char *x_data;
 	NO_GFX;
-	x_data = mem_alloc(strlen(data) + 2);
+	x_data = mem_alloc(strlen(cast_const_char data) + 2);
 	x_data[0] = code;
-	strcpy(x_data + 1, data);
+	strcpy(cast_char(x_data + 1), cast_const_char data);
 	exec_on_terminal(term, NULL, x_data, 0);
 	mem_free(x_data);
 }
@@ -1276,20 +1277,20 @@ void set_terminal_title(struct terminal *term, unsigned char *title)
 	for (i = 0; i < 10000; i++) if (!title[i]) goto s;
 	title[10000] = 0;
 	s:
-	if (strchr(title, 1)) {
+	if (strchr(cast_const_char title, 1)) {
 		unsigned char *a, *b;
 		for (a = title, b = title; *a; a++) if (*a != 1) *b++ = *a;
 		*b = 0;
 	}
-	if (term->title && !strcmp(title, term->title)) goto ret;
+	if (term->title && !strcmp(cast_const_char title, cast_const_char term->title)) goto ret;
 	if (term->title) mem_free(term->title);
 	term->title = stracpy(title);
 #ifdef SET_WINDOW_TITLE_UTF_8
 	{
 		struct conv_table *table;
 		mem_free(title);
-		table = get_translation_table(term->spec->charset, get_cp_index("utf-8"));
-		title = convert_string(table, term->title, strlen(term->title), NULL);
+		table = get_translation_table(term->spec->charset, utf8_table);
+		title = convert_string(table, term->title, strlen(cast_const_char term->title), NULL);
 	}
 #endif
 	if (!F) do_terminal_function(term, TERM_FN_TITLE, title);

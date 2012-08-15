@@ -40,8 +40,8 @@
 #define RC_GAMES		KEY_GAMES
 #define RC_INFO			KEY_INFO
 
-extern	void			RcGetActCode( void );
-extern	int			RcInitialize( int extfd );
-extern	void			RcClose( void );
+void			RcGetActCode( void );
+int			RcInitialize( int extfd );
+void			RcClose( void );
 
 #endif  // RC_INPUT_H

@@ -9,10 +9,6 @@
 #include <sys/ioctl.h>
 #endif
 
-#if defined(HAVE_LIBGPM) && defined(HAVE_GPM_H)
-#define USE_GPM
-#endif
-
 #ifdef USE_GPM
 #include <gpm.h>
 #endif
@@ -50,28 +46,30 @@ unsigned char *escape_path(unsigned char *path)
 {
 	unsigned char *result;
 	size_t i;
-	if (strchr(path, '"')) return stracpy(path);
+	if (strchr(cast_const_char path, '"')) return stracpy(path);
 	for (i = 0; path[i]; i++) if (!is_safe_in_url(path[i])) goto do_esc;
 	return stracpy(path);
 	do_esc:
-	result = stracpy("\"");
+	result = stracpy(cast_uchar "\"");
 	add_to_strn(&result, path);
-	add_to_strn(&result, "\"");
+	add_to_strn(&result, cast_uchar "\"");
 	return result;
 }
 
 static int get_e(unsigned char *env)
 {
 	unsigned char *v;
-	if ((v = getenv(env))) return atoi(v);
+	if ((v = cast_uchar getenv(cast_const_char env))) return atoi(cast_const_char v);
 	return 0;
 }
 
 void ignore_signals(void)
 {
-	signal(SIGPIPE, SIG_IGN);
+	errno = 0;
+	while (signal(SIGPIPE, SIG_IGN) == SIG_ERR && errno == EINTR) errno = 0;
 #ifdef SIGXFSZ
-	signal(SIGXFSZ, SIG_IGN);
+	errno = 0;
+	while (signal(SIGXFSZ, SIG_IGN) == SIG_ERR && errno == EINTR) errno = 0;
 #endif
 }
 
@@ -88,6 +86,7 @@ unsigned char *clipboard = NULL;
 #define INCL_DOSPROCESS
 #define INCL_DOSERRORS
 #define INCL_DOSMODULEMGR
+#define INCL_DOSMISC
 #define INCL_WIN
 #define INCL_WINCLIPBOARD
 #define INCL_WINSWITCHLIST
@@ -107,16 +106,160 @@ unsigned char *clipboard = NULL;
 
 #endif
 
+
+#ifdef OS2
+
+/* The process crashes if we write to console from high address - so we must
+ * never do it.
+ * TCP/IP 4.0 returns EFAULT if we do I/O to/from high address - we test for
+ * EFAULT and retry with a bounce buffer.  */
+
+#define BOUNCE_BUFFER_SIZE	256
+
+int bounced_read(int fd, void *buf, size_t size)
+{
+	unsigned char *bounce_buffer;
+	size_t xsiz;
+	int r;
+	if (fd < 3 && (unsigned long)buf + size > 0x20000000) goto bounce;
+	r = _read(fd, buf, size);
+	if (r == -1 && errno == EFAULT) goto bounce;
+	return r;
+	bounce:
+	xsiz = size > BOUNCE_BUFFER_SIZE ? BOUNCE_BUFFER_SIZE : size;
+	bounce_buffer = alloca(xsiz);
+	r = _read(fd, bounce_buffer, xsiz);
+	if (r > 0) memcpy(buf, bounce_buffer, r);
+	return r;
+}
+
+int bounced_write(int fd, const void *buf, size_t size)
+{
+	unsigned char *bounce_buffer;
+	size_t xsiz;
+	int r;
+	if (fd < 3 && (unsigned long)buf + size > 0x20000000) goto bounce;
+	r = _write(fd, buf, size);
+	if (r == -1 && errno == EFAULT) goto bounce;
+	return r;
+	bounce:
+	xsiz = size > BOUNCE_BUFFER_SIZE ? BOUNCE_BUFFER_SIZE : size;
+	bounce_buffer = alloca(xsiz);
+	memcpy(bounce_buffer, buf, xsiz);
+	return _write(fd, bounce_buffer, xsiz);
+}
+
+#endif
+
+#ifdef OS2_ADVANCED_HEAP
+
+#include <umalloc.h>
+
+#ifndef OBJ_ANY
+#define OBJ_ANY		0x0400
+#endif
+
+unsigned long mem_requested = 0;
+unsigned long blocks_requested = 0;
+
+static int dosallocmem_attrib = PAG_READ | PAG_WRITE | PAG_COMMIT;
+
+#define HEAP_ALIGN		0x10000
+#define HEAP_PAD		2
+#define HEAP_MAXPAD		0x1000000
+
+static void heap_release(Heap_t h, void *ptr, size_t len)
+{
+	int rc;
+	mem_requested -= ((len | 4095) + 1);
+	blocks_requested--;
+	rc = DosFreeMem(ptr);
+	/*fprintf(stderr, "heap free %p -> %d\n", ptr, rc);*/
+	if (rc) {
+		fatal_exit("DosFreeMem failed: %d", rc);
+	}
+}
+
+static void *heap_alloc(Heap_t h, size_t *size, int *pclean)
+{
+	void *result;
+	int rc;
+	/* If we rounded up to page size, EMX would join all allocations
+	 * to one segment and refuse to free memory. So round up to
+	 * page size - 1 */
+	size_t real_size = *size;
+	if (real_size < HEAP_MAXPAD / HEAP_PAD) {
+		real_size *= HEAP_PAD;
+		real_size = real_size | (HEAP_ALIGN - 1);
+	} else {
+		real_size |= 1;
+	}
+	rc = DosAllocMem(&result, real_size, dosallocmem_attrib);
+	/*fprintf(stderr, "heap alloc %d -> %p, %d\n", *size, result, rc);*/
+	if (!rc) {
+		/*
+		 * Hitting the shared arena has a negative impact on the whole
+		 * system. Therefore, we fake failure (so that Links frees
+		 * some caches) and try allocating near the shared arena only
+		 * as a last resort.
+		 */
+		if ((unsigned long)result >= 0x12000000 &&
+		    (unsigned long)result < 0x20000000) {
+			if (!malloc_try_hard) {
+				heap_release(NULL, result, real_size);
+				return NULL;
+			}
+		}
+		*size = real_size;
+		*pclean = _BLOCK_CLEAN;
+		mem_requested += ((real_size | 4095) + 1);
+		blocks_requested++;
+		return result;
+	} else {
+		return NULL;
+	}
+}
+
+static void init_os2_heap(void)
+{
+	Heap_t new_heap;
+	size_t init_size = _HEAP_MIN_SIZE;
+	void *init_mem;
+	int init_clean;
+	dosallocmem_attrib |= OBJ_ANY;
+	init_mem = heap_alloc(NULL, &init_size, &init_clean);
+	if (!init_mem) {
+		dosallocmem_attrib &= ~OBJ_ANY;
+		init_mem = heap_alloc(NULL, &init_size, &init_clean);
+		if (!init_mem) {
+			return;
+		}
+	}
+	new_heap = _ucreate(init_mem, init_size, init_clean, _HEAP_REGULAR, heap_alloc, heap_release);
+	if (!new_heap) {
+		heap_release(NULL, init_mem, init_size);
+		return;
+	}
+	if (_uopen(new_heap) == -1) {
+#if defined(HAVE__UDESTROY) && defined(_FORCE)
+		_udestroy(new_heap, _FORCE);
+#else
+		heap_release(NULL, init_mem, init_size);
+#endif
+		return;
+	}
+	_udefault(new_heap);
+}
+
+#endif
+
 #if defined(O_SIZE) && defined(__EMX__)
 
 int open_prealloc(unsigned char *name, int flags, int mode, off_t siz)
 {
-	return open(name, flags | O_SIZE, mode, (unsigned long)siz);
-}
-
-void prealloc_truncate(int h, off_t siz)
-{
-	ftruncate(h, siz);
+	int h;
+	EINTRLOOP(h, open(name, flags | O_SIZE, mode, (unsigned long)siz));
+	return h;
 }
 
 #endif
@@ -135,9 +278,10 @@ static void winch_thread(void *p, int l)
 	while (1) {
 		if (get_terminal_size(1, &cur_xsize, &cur_ysize)) return;
 		if ((old_xsize != cur_xsize) || (old_ysize != cur_ysize)) {
+			int rr;
 			old_xsize = cur_xsize;
 			old_ysize = cur_ysize;
-			raise(SIGWINCH);
+			EINTRLOOP(rr, raise(SIGWINCH));
 		}
 		sleep(1);
 	}
@@ -163,7 +307,7 @@ static void sigwinch(void *s)
 
 void handle_terminal_resize(int fd, void (*fn)(void))
 {
-	install_signal_handler(SIGWINCH, sigwinch, fn, 0);
+	install_signal_handler(SIGWINCH, sigwinch, (void *)fn, 0);
 #ifdef WIN32
 	win32_resize_poll();
 #endif
@@ -177,14 +321,17 @@ void unhandle_terminal_resize(int fd)
 int get_terminal_size(int fd, int *x, int *y)
 {
 	volatile struct winsize ws;	/* Sun Studio misoptimizes it */
+	int rs;
 	if (!x || !y) return -1;
-	if (ioctl(1, TIOCGWINSZ, &ws) != -1) {
-		if (!(*x = ws.ws_col) && !(*x = get_e("COLUMNS"))) *x = 80;
-		if (!(*y = ws.ws_row) && !(*y = get_e("LINES"))) *y = 24;
-		return 0;
-	} else {
-		if (!(*x = get_e("COLUMNS"))) *x = 80;
-		if (!(*y = get_e("LINES"))) *y = 24;
+	EINTRLOOP(rs, ioctl(1, TIOCGWINSZ, &ws));
+	if ((rs == -1 || !(*x = ws.ws_col)) && !(*x = get_e(cast_uchar "COLUMNS"))) {
+		*x = 80;
+#ifdef _UWIN
+		*x = 79;
+#endif
+	}
+	if ((rs == -1 || !(*y = ws.ws_row)) && !(*y = get_e(cast_uchar "LINES"))) {
+		*y = 24;
 	}
 	return 0;
 }
@@ -218,9 +365,10 @@ static void winch_thread(void)
 	while (1) {
 		if (get_terminal_size(1, &cur_xsize, &cur_ysize)) return;
 		if ((old_xsize != cur_xsize) || (old_ysize != cur_ysize)) {
+			int wr;
 			old_xsize = cur_xsize;
 			old_ysize = cur_ysize;
-			write(winch_pipe[1], "x", 1);
+			EINTRLOOP(wr, write(winch_pipe[1], "x", 1));
 			/* Resizing may take some time. So don't send a flood
                      of requests?! */
 			_sleep2(2*WINCH_SLEEPTIME);   
@@ -233,7 +381,11 @@ static void winch_thread(void)
 static void winch(void *s)
 {
 	unsigned char c;
-	while (can_read(winch_pipe[0]) && read(winch_pipe[0], &c, 1) == 1);
+	while (can_read(winch_pipe[0])) {
+		int rd;
+		EINTRLOOP(rd, read(winch_pipe[0], &c, 1));
+		if (rd != 1) break;
+	}
 	((void (*)(void))s)();
 }
 
@@ -259,7 +411,6 @@ int get_terminal_size(int fd, int *x, int *y)
 	if (!x || !y) return -1;
 	if (is_xterm()) {
 #ifdef X2
-		/* int fd; */
 		int arc;
 		struct winsize win;
 
@@ -282,7 +433,9 @@ int get_terminal_size(int fd, int *x, int *y)
 		_scrsize(a);
 		*x = a[0];
 		*y = a[1];
+#ifdef X2
 		set_default:
+#endif
 		if (*x == 0) {
 			*x = get_e("COLUMNS");
 			if (*x == 0) *x = 80;
@@ -299,32 +452,28 @@ int get_terminal_size(int fd, int *x, int *y)
 
 /* Pipe */
 
-#if defined(UNIX) || defined(INTERIX) || defined(BEOS) || defined(RISCOS) || defined(ATHEOS) || defined(SPAD)
-
-void set_bin(int fd)
-{
-}
-
-int c_pipe(int *fd)
-{
-	return pipe(fd);
-}
-
-#elif defined(OS2) || defined(WIN32)
+#if defined(OS2) || (defined(WIN32) && !defined(_UWIN))
 
 void set_bin(int fd)
 {
 	setmode(fd, O_BINARY);
 }
 
-int c_pipe(int *fd)
+#else
+
+void set_bin(int fd)
 {
-	int r = pipe(fd);
-	if (!r) set_bin(fd[0]), set_bin(fd[1]);
-	return r;
 }
 
 #endif
+
+int c_pipe(int *fd)
+{
+	int r;
+	EINTRLOOP(r, pipe(fd));
+	if (!r) set_bin(fd[0]), set_bin(fd[1]);
+	return r;
+}
 
 /* Exec */
 
@@ -376,38 +525,35 @@ void close_fork_tty(void)
 	struct download *d;
 	struct connection *c;
 	struct k_conn *k;
-	foreach (t, terminals) if (t->fdin > 0) close(t->fdin);
-	foreach (d, downloads) if (d->handle > 0) close(d->handle);
+	int rs;
+	foreach (t, terminals) if (t->fdin > 0)
+		EINTRLOOP(rs, close(t->fdin));
+	foreach (d, downloads) if (d->handle > 0)
+		EINTRLOOP(rs, close(d->handle));
 	foreach (c, queue) close_socket(&c->sock1), close_socket(&c->sock2);
-	foreach (k, keepalive_connections) close(k->conn);
+	foreach (k, keepalive_connections)
+		EINTRLOOP(rs, close(k->conn));
 }
 
 void init_os(void)
 {
+#ifdef OS2_ADVANCED_HEAP
+	init_os2_heap();
+#endif
 #if defined(RLIMIT_OFILE) && !defined(RLIMIT_NOFILE)
 #define RLIMIT_NOFILE RLIMIT_OFILE
 #endif
 #if defined(HAVE_GETRLIMIT) && defined(HAVE_SETRLIMIT) && defined(RLIMIT_NOFILE)
 	struct rlimit limit;
-	if (getrlimit(RLIMIT_NOFILE, &limit))
+	int rs;
+	EINTRLOOP(rs, getrlimit(RLIMIT_NOFILE, &limit));
+	if (rs)
 		goto skip_limit;
 	if (limit.rlim_cur > FD_SETSIZE) {
 		limit.rlim_cur = FD_SETSIZE;
-		setrlimit(RLIMIT_NOFILE, &limit);
+		EINTRLOOP(rs, setrlimit(RLIMIT_NOFILE, &limit));
 	}
 skip_limit:;
-#endif
-}
-
-void init_os_terminal(void)
-{
-#ifdef INTERIX
-	/* Some sort of terminal bug in Interix, if we run xterm -e links,
-	   terminal doesn't switch to raw mode, executing "stty sane" fixes it.
-	   Don't do this workaround on console. */
-	unsigned char *term = getenv("TERM");
-	if (!term || strncasecmp(term, "interix", 7))
-		system("stty sane 2>/dev/null");
 #endif
 }
 
@@ -420,7 +566,7 @@ void get_path_to_exe(void)
 	   it */
 	unsigned r;
 	static unsigned char path[4096];
-	r = GetModuleFileName(NULL, path, sizeof path);
+	r = GetModuleFileNameA(NULL, cast_char path, sizeof path);
 	if (r <= 0 || r >= sizeof path) {
 		path_to_exe = g_argv[0];
 		return;
@@ -430,19 +576,73 @@ void get_path_to_exe(void)
 
 #elif defined(OS2)
 
+static int os2_full_screen = 0;
+static int os2_detached = 0;
+static PTIB os2_tib = NULL;
+PPIB os2_pib = NULL;
+static HSWITCH os2_switchhandle = NULLHANDLE;
+
 void get_path_to_exe(void)
 {
 	/* If you spawn links with quotation marks from cmd.exe,
 	   the quotation marks will be present in g_argv[0] ... and will
 	   prevent executing it */
 	static unsigned char path[270];
-	PPIB pib = NULL;
 	path_to_exe = g_argv[0];
-	/*if (!strchr(path_to_exe, ' ') && !strchr(path_to_exe, '"')) return;*/
-	DosGetInfoBlocks(NULL, &pib);
-	if (!pib) return;
-	if (DosQueryModuleName(pib->pib_hmte, sizeof path, path)) return;
+	DosGetInfoBlocks(&os2_tib, &os2_pib);
+	if (!os2_pib) return;
+	os2_switchhandle = WinQuerySwitchHandle(0, os2_pib->pib_ulpid);
+	os2_full_screen = os2_pib->pib_ultype == 0;
+	os2_detached = os2_pib->pib_ultype == 4;
+	if (DosQueryModuleName(os2_pib->pib_hmte, sizeof path, path)) return;
 	path_to_exe = path;
+}
+
+static ULONG os2_old_type;
+static HAB os2_hab;
+static HMQ os2_hmq;
+
+static int os2_init_pm(void)
+{
+	if (!os2_pib) goto err0;
+	os2_old_type = os2_pib->pib_ultype;
+	os2_pib->pib_ultype = 3;
+	os2_hab = WinInitialize(0);
+	if (os2_hab == NULLHANDLE) goto err1;
+	os2_hmq = WinCreateMsgQueue(os2_hab, 0);
+	if (os2_hmq == NULLHANDLE) goto err2;
+	return 0;
+err2:
+	WinTerminate(os2_hab);
+err1:
+	os2_pib->pib_ultype = os2_old_type;
+err0:
+	return -1;
+}
+
+static void os2_exit_pm(void)
+{
+	WinDestroyMsgQueue(os2_hmq);
+	WinTerminate(os2_hab);
+	os2_pib->pib_ultype = os2_old_type;
+}
+
+int os_get_system_name(unsigned char *buffer)
+{
+	ULONG version[3];
+	if (DosQuerySysInfo(QSV_VERSION_MAJOR, QSV_VERSION_REVISION, version, sizeof version))
+		return -1;
+	if (version[0] == 20) {
+		version[0] = 2;
+		if (version[1] == 10) {
+			version[1] = 1;
+		} else if (version[1] >= 30) {
+			version[0] = version[1] / 10;
+			version[1] %= 10;
+		}
+	}
+	sprintf(cast_char buffer, "OS/2 %d.%d i386", (int)version[0], (int)version[1]);
+	return 0;
 }
 
 #else
@@ -450,6 +650,60 @@ void get_path_to_exe(void)
 void get_path_to_exe(void)
 {
 	path_to_exe = g_argv[0];
+}
+
+#endif
+
+void init_os_terminal(void)
+{
+#ifdef INTERIX
+	/* Some sort of terminal bug in Interix, if we run xterm -e links,
+	   terminal doesn't switch to raw mode, executing "stty sane" fixes it.
+	   Don't do this workaround on console. */
+	unsigned char *term = cast_uchar getenv("TERM");
+	if (!term || strncasecmp(cast_const_char term, "interix", 7)) {
+		int rr;
+		errno = 0;
+		EINTRLOOP(rr, system("stty sane 2>/dev/null"));
+	}
+#endif
+#ifdef OS2
+	if (os2_detached) {
+		fatal_exit("Links doesn't work in detached session");
+	}
+#endif
+}
+
+#ifdef INTERIX
+
+static inline void cut_program_path(unsigned char *prog, unsigned char **prog_start, unsigned char **prog_end)
+{
+	while (WHITECHAR(*prog)) prog++;
+	if (prog[0] == '"' || prog[0] == '\'') {
+		*prog_start = prog + 1;
+		*prog_end = cast_uchar strchr(cast_const_char(prog + 1), prog[0]);
+		if (!*prog_end)
+			*prog_end = cast_uchar strchr(cast_const_char prog, 0);
+	} else {
+		*prog_start = prog;
+		*prog_end = prog + strcspn(cast_const_char prog, " ");
+	}
+}
+
+static inline int is_windows_drive(unsigned char *prog_start, unsigned char *prog_end)
+{
+	if (prog_end - prog_start >= 3 && upcase(prog_start[0]) >= 'A' && upcase(prog_start[0]) <= 'Z' && prog_start[1] == ':')
+		return 1;
+	return 0;
+}
+
+static inline int is_windows_program(unsigned char *prog_start, unsigned char *prog_end)
+{
+	if (prog_end - prog_start > 4 && (
+		!strncasecmp(cast_const_char(prog_end - 4), ".exe", 4) ||
+		!strncasecmp(cast_const_char(prog_end - 4), ".bat", 4)))
+			return 1;
+	return 0;
 }
 
 #endif
@@ -486,17 +740,31 @@ unsigned char *os_conv_to_external_path(unsigned char *file, unsigned char *prog
 	return stracpy(new_path);
 }
 
+#elif defined(WIN32) && defined(HAVE_UWIN_PATH)
+
+unsigned char *os_conv_to_external_path(unsigned char *file, unsigned char *prog)
+{
+	unsigned char *new_path;
+	ssize_t sz, sz2;
+	sz = uwin_path(file, NULL, 0);
+	if (sz < 0) return stracpy(file);
+	new_path = mem_alloc(sz + 1);
+	sz2 = uwin_path(file, new_path, sz + 1);
+	if (sz2 < 0 || sz2 > sz) {
+		mem_free(new_path);
+		return stracpy(file);
+	}
+	return new_path;
+}
+
 #elif defined(INTERIX) && defined(HAVE_UNIXPATH2WIN)
 
 unsigned char *os_conv_to_external_path(unsigned char *file, unsigned char *prog)
 {
-	/* Convert path only if the program has ".exe" extension */
-	unsigned char *prog_end;
-	if (prog[0] == '"' || prog[0] == '\'') prog_end = strchr(prog + 1, prog[0]);
-	else prog_end = strchr(prog, ' ');
-	if (!prog_end) goto copy_path;
-	if (prog_end - prog <= 4) goto copy_path;
-	if (!strncasecmp(prog_end - 4, ".exe", 4)) {
+	unsigned char *prog_start, *prog_end;
+	cut_program_path(prog, &prog_start, &prog_end);
+	/* Convert path only if the program has ".exe" or ".bat" extension */
+	if (is_windows_program(prog_start, prog_end)) {
 #ifdef MAX_PATH
 		unsigned char new_path[MAX_PATH];
 #else
@@ -515,7 +783,7 @@ unsigned char *os_conv_to_external_path(unsigned char *file, unsigned char *prog
 			 * Unix shell hates backslash and Windows applications
 			 * accept '/'
 			 */
-			if (*p == '\\') add_to_str(&newstr, &newstrl, "/");
+			if (*p == '\\') add_to_str(&newstr, &newstrl, cast_uchar "/");
 			else add_chr_to_str(&newstr, &newstrl, *p);
 		}
 		return newstr;
@@ -537,18 +805,9 @@ unsigned char *os_conv_to_external_path(unsigned char *file, unsigned char *prog
 
 unsigned char *os_fixup_external_program(unsigned char *prog)
 {
-	unsigned char *prog_start;
-	unsigned char *prog_end;
-	if (prog[0] == '"' || prog[0] == '\'') {
-		prog_start = prog + 1;
-		prog_end = strchr(prog + 1, prog[0]);
-		if (!prog_end)
-			prog_end = strchr(prog, 0);
-	} else {
-		prog_start = prog;
-		prog_end = prog + strcspn(prog, " ");
-	}
-	if (prog_end - prog_start >= 3 && upcase(prog_start[0]) >= 'A' && upcase(prog_start[0]) <= 'Z' && prog_start[1] == ':') {
+	unsigned char *prog_start, *prog_end;
+	cut_program_path(prog, &prog_start, &prog_end);
+	if (is_windows_drive(prog_start, prog_end)) {
 #ifdef MAX_PATH
 		unsigned char new_path[MAX_PATH];
 #else
@@ -556,7 +815,21 @@ unsigned char *os_fixup_external_program(unsigned char *prog)
 #endif
 		unsigned char *newstr;
 		int newstrl;
-		unsigned char *xpath = memacpy(prog_start, prog_end - prog_start);
+		unsigned char *xpath;
+		if (is_windows_program(prog_start, prog_end)) {
+			/*
+			 * There is some bug in Interix. Executing Win32
+			 * binaries works from the console but doesn't work
+			 * from xterm. So we prepend "cmd /c" to the program
+			 * as a workaround.
+			 */
+			newstr = init_str();
+			newstrl = 0;
+			add_to_str(&newstr, &newstrl, cast_uchar "cmd /c ");
+			add_to_str(&newstr, &newstrl, prog);
+			return newstr;
+		}
+		xpath = memacpy(prog_start, prog_end - prog_start);
 		if (winpath2unix(xpath, 0, new_path, sizeof(new_path))) {
 			mem_free(xpath);
 			goto copy_prog;
@@ -572,7 +845,6 @@ unsigned char *os_fixup_external_program(unsigned char *prog)
 	copy_prog:
 	return stracpy(prog);
 }
-
 
 #else
 
@@ -590,16 +862,22 @@ unsigned char *os_fixup_external_program(unsigned char *prog)
 
 int exe(unsigned char *path, int fg)
 {
-	pid_t p;
-	int s;
-	fg=fg;  /* ignore flag */
-	if (!(p = fork())) {
-		setpgid(0, 0);
-		system(path);
+	pid_t p, rp;
+	int s, rs;
+	EINTRLOOP(p, fork());
+	if (!p) {
+		EINTRLOOP(rs, setpgid(0, 0));
+		errno = 0;
+		EINTRLOOP(rs, system(path));
 		_exit(0);
 	}
-	if (p > 0) waitpid(p, &s, 0);
-	else return system(path);
+	if (p > 0) {
+		EINTRLOOP(rp, waitpid(p, &s, 0));
+	} else {
+		errno = 0;
+		EINTRLOOP(rs, system(path));
+		return rs;
+	}
 	return 0;
 }
 
@@ -608,19 +886,25 @@ int exe(unsigned char *path, int fg)
 /* UNIX */
 int exe(unsigned char *path, int fg)
 {
+	int rs;
 #ifdef G
 	if (F && drv->exec) return drv->exec(path, fg);
 #endif
 #ifdef SIGTSTP
-	signal(SIGTSTP, SIG_DFL);
+	errno = 0;
+	while (signal(SIGTSTP, SIG_DFL) == SIG_ERR && errno == EINTR) errno = 0;
 #endif
 #ifdef SIGCONT
-	signal(SIGCONT, SIG_DFL);
+	errno = 0;
+	while (signal(SIGCONT, SIG_DFL) == SIG_ERR && errno == EINTR) errno = 0;
 #endif
 #ifdef SIGWINCH
-	signal(SIGWINCH, SIG_DFL);
+	errno = 0;
+	while (signal(SIGWINCH, SIG_DFL) == SIG_ERR && errno == EINTR) errno = 0;
 #endif
-	return system(path);
+	errno = 0;
+	EINTRLOOP(rs, system(cast_const_char path));
+	return rs;
 }
 
 #endif
@@ -677,7 +961,7 @@ int resize_window(int x, int y)
 
 #elif defined(WIN32)
 
-static int is_winnt(void)
+int is_winnt(void)
 {
 	OSVERSIONINFO v;
 	v.dwOSVersionInfoSize = sizeof v;
@@ -692,36 +976,91 @@ int exe(unsigned char *path, int fg)
 	/* This is very tricky. We must have exactly 3 arguments, the first
 	   one shell and the second one "/c", otherwise Cygwin would quote
 	   the arguments and trash them */
-	int ct;
+	int ct = 0;
 	unsigned char buffer[1024];
 	unsigned char buffer2[1024];
-	pid_t pid;
+	size_t want_alloc;
+	pid_t pid, rp;
+#ifndef _UWIN
+	int rs;
+#endif
 	unsigned char *x1;
 	unsigned char *arg;
-	x1 = GETSHELL;
-	if (!x1) x1 = DEFAULT_SHELL;
-	arg = alloca(strlen(WIN32_START_STRING) + 3 + strlen(path) + 1);
-	strcpy(arg, WIN32_START_STRING);
-	if (*path == '"' && strlen(x1) >= 7 && !strcasecmp(x1 + strlen(x1) - 7, "cmd.exe")) strcat(arg, "\"\" ");
-	strcat(arg, path);
-	ct = GetConsoleTitle(buffer, sizeof buffer);
-	if (!(pid = fork())) {
-		int i;
-	/* Win98 crashes if we spawn command.com and have some sockets open */
-		for (i = 0; i < FD_SETSIZE; i++) close(i);
-		open("nul", O_RDONLY);
-		open("nul", O_WRONLY);
-		open("nul", O_WRONLY);
-		execlp(x1, x1, "/c", arg, NULL);
-		_exit(1);
-	}
-	if (!is_winnt()) {
-		sleep(1);
-		if (ct && GetConsoleTitle(buffer2, sizeof buffer2) && !casecmp(buffer2, "start", 5)) {
-			SetConsoleTitle(buffer);
+	x1 = cast_uchar GETSHELL;
+	if (!x1) x1 = cast_uchar DEFAULT_SHELL;
+
+	want_alloc = strlen(cast_const_char WIN32_START_STRING) + 3 + strlen(cast_const_char path) + 1;
+#ifdef _UWIN
+	want_alloc += strlen(cast_const_char x1) + 4;
+	want_alloc *= 2;
+#endif
+
+	arg = malloc(want_alloc);
+	if (!arg) return -1;
+	*arg = 0;
+#ifdef _UWIN
+	strcat(cast_char arg, cast_const_char x1);
+	strcat(cast_char arg, " /c ");
+#endif
+	strcat(cast_char arg, cast_const_char WIN32_START_STRING);
+	if (*path == '"' && strlen(cast_const_char x1) >= 7 && !strcasecmp(cast_const_char(x1 + strlen(cast_const_char x1) - 7), "cmd.exe")) strcat(cast_char arg, "\"\" ");
+	strcat(cast_char arg, cast_const_char path);
+	if (!is_winnt()) ct = GetConsoleTitleA(cast_char buffer, sizeof buffer);
+#if defined(_UWIN) && !defined(__DMC__)
+	{
+		unsigned char *q1 = arg, *q2 = arg;
+		while (*q1) {
+			if (*q1 == '\\') q2++;
+			q2++;
+			q1++;
+		}
+		while (1) {
+			*q2 = *q1;
+			if (*q1 == '\\') {
+				q2--;
+				*q2 = '\\';
+			}
+			if (q1 == arg) break;
+			q1--;
+			q2--;
 		}
 	}
-	if (pid != -1) waitpid(pid, NULL, 0);
+	/* UWin corrupts heap if we use threads and fork */
+	pid = spawnl("/bin/sh", "/bin/sh", "-c", arg, NULL);
+#else
+#if 1		/* spawn breaks mouse, do this only in graphics mode */
+	if (F && is_winnt()) {
+		/* spawn crashes on Win98 */
+		spawnlp(_P_WAIT, cast_const_char x1, cast_const_char x1, "/c", cast_const_char arg, NULL);
+		goto free_ret;
+	} else
+#endif
+	{
+		EINTRLOOP(pid, fork());
+		if (!pid) {
+			int i;
+	/* Win98 crashes if we spawn command.com and have some sockets open */
+			for (i = 0; i < FD_SETSIZE; i++)
+				EINTRLOOP(rs, close(i));
+			EINTRLOOP(rs, open("nul", O_RDONLY));
+			EINTRLOOP(rs, open("nul", O_WRONLY));
+			EINTRLOOP(rs, open("nul", O_WRONLY));
+			EINTRLOOP(rs, execlp(cast_const_char x1, cast_const_char x1, "/c", cast_const_char arg, NULL));
+			_exit(1);
+		}
+	}
+#endif
+	if (!is_winnt()) {
+		sleep(1);
+		if (ct && GetConsoleTitleA(cast_char buffer2, sizeof buffer2) && !casecmp(buffer2, cast_uchar "start", 5)) {
+			SetConsoleTitleA(cast_const_char buffer);
+		}
+	}
+	if (pid != -1) EINTRLOOP(rp, waitpid(pid, NULL, 0));
+	goto free_ret;
+
+	free_ret:
+	free(arg);
 	return 0;
 }
 
@@ -731,14 +1070,22 @@ unsigned char *get_clipboard_text(struct terminal *term)
 	unsigned char *str, *s, *d;
 	int l;
 	int r;
-	int h = open("/dev/clipboard", O_RDONLY);
+	int rs;
+	int h;
+	if (!clipboard_support(term)) return stracpy(clipboard);
+	EINTRLOOP(h, open("/dev/clipboard", O_RDONLY));
 	if (h == -1) return stracpy(clipboard);
 	set_bin(h);	/* O_TEXT doesn't work on clipboard handle */
 	str = init_str();
 	l = 0;
-	while ((r = hard_read(h, buffer, sizeof buffer)) > 0)
+	/* Don't use hard_read because UWin has buggy end-of-file signalling.
+	   It resets the position to the beginning after signalling eof. */
+	while (1) {
+		EINTRLOOP(r, read(h, buffer, sizeof buffer));
+		if (r <= 0) break;
 		add_bytes_to_str(&str, &l, buffer, r);
-	close(h);
+	}
+	EINTRLOOP(rs, close(h));
 	for (s = str, d = str; *s; s++)
 		if (!(s[0] == '\r' && s[1] == '\n')) *d++ = *s;
 	*d = 0;
@@ -752,59 +1099,61 @@ void set_clipboard_text(struct terminal *term, unsigned char *data)
 	unsigned char *conv_data;
 	int l;
 	int h;
+	int rs;
 	if (clipboard) mem_free(clipboard);
 	clipboard = stracpy(data);
-	h = open("/dev/clipboard", O_WRONLY);
+	if (!clipboard_support(term)) return;
+	EINTRLOOP(h, open("/dev/clipboard", O_WRONLY));
 	if (h == -1) return;
 	set_bin(h);	/* O_TEXT doesn't work on clipboard handle */
 	conv_data = init_str();
 	l = 0;
 	for (; *data; data++)
-		if (*data == '\n') add_to_str(&conv_data, &l, "\r\n");
+		if (*data == '\n') add_to_str(&conv_data, &l, cast_uchar "\r\n");
 		else add_chr_to_str(&conv_data, &l, *data);
 	hard_write(h, conv_data, l);
 	mem_free(conv_data);
-	close(h);
+	EINTRLOOP(rs, close(h));
 }
 
 int clipboard_support(struct terminal *term)
 {
-	return 1;
+	struct stat st;
+	int rs;
+	EINTRLOOP(rs, stat("/dev/clipboard", &st));
+	return !rs && S_ISCHR(st.st_mode);
 }
 
-
-static int get_windows_cp(void)
+int get_windows_cp(int cons)
 {
-	unsigned char str[6];
+	unsigned char str[8];
 	int cp, idx;
-	static int win_cp_idx = -1;
-	if (win_cp_idx != -1) return win_cp_idx;
-	if (is_winnt())
+	if (cons && is_winnt())
 		cp = GetConsoleOutputCP();
 	else
 		cp = GetACP();
 	if (cp <= 0 || cp >= 100000) return 0;
-	sprintf(str, "%d", cp);
+	if (cp == 874) cp = 28605;
+	if (cp >= 28591 && cp <= 28605) {
+		sprintf(cast_char str, "8859-%d", cp - 28590);
+	} else {
+		sprintf(cast_char str, "%d", cp);
+	}
 	if ((idx = get_cp_index(str)) < 0) return 0;
-	win_cp_idx = idx;
 	return idx;
-}
-
-static int get_utf8_cp(void)
-{
-	static int idx = -1;
-	return idx >= 0 ? idx : (idx = get_cp_index("utf-8"));
 }
 
 void set_window_title(unsigned char *title)
 {
-	unsigned char *t;
+	unsigned char *t, *p;
 	struct conv_table *ct;
 	if (!title) return;
 	if (is_xterm()) return;
-	ct = get_translation_table(get_utf8_cp(), get_windows_cp());
-	t = convert_string(ct, title, strlen(title), NULL);
-	SetConsoleTitle(t);
+	ct = get_translation_table(utf8_table, get_windows_cp(1));
+	t = convert_string(ct, title, strlen(cast_const_char title), NULL);
+	for (p = cast_uchar strchr(cast_const_char t, 1); p; p = cast_uchar strchr(cast_const_char(p + 1), 1))
+		*p = ' ';
+	SetConsoleTitleA(cast_const_char t);
 	mem_free(t);
 }
 
@@ -814,25 +1163,46 @@ unsigned char *get_window_title(void)
 	int r;
 	unsigned char buffer[1024];
 	if (is_xterm()) return NULL;
-	if (!(r = GetConsoleTitle(buffer, sizeof buffer))) return NULL;
-	ct = get_translation_table(get_windows_cp(), get_utf8_cp());
+	if (!(r = GetConsoleTitleA(cast_char buffer, sizeof buffer))) return NULL;
+	ct = get_translation_table(get_windows_cp(1), utf8_table);
 	return convert_string(ct, buffer, r, NULL);
 }
 
 static void call_resize(unsigned char *x1, int x, int y)
 {
-	pid_t pid;
-	unsigned char arg[40];
-	sprintf(arg, "mode %d,%d", x, y);
-	if (!(pid = fork())) {
-		int i;
+	pid_t pid, rp;
+#ifndef _UWIN
+	int rs;
+#endif
+	unsigned char arg[MAX_STR_LEN];
+#ifdef _UWIN
+	x++;
+#endif
+	sprintf(cast_char arg, "mode %d,%d", x, y);
+#if defined(_UWIN) && !defined(__DMC__)
+	pid = spawnlp(x1, x1, "/c", arg, NULL);
+#else
+#if 0		/* spawn breaks mouse, don't use this */
+	if (is_winnt()) {
+		/* spawn crashes on Win98 */
+		spawnlp(_P_WAIT, x1, x1, "/c", arg, NULL);
+		return;
+	} else
+#endif
+	{
+		EINTRLOOP(pid, fork());
+		if (!pid) {
+			int i;
 	/* Win98 crashes if we spawn command.com and have some sockets open */
-		for (i = 0; i < FD_SETSIZE; i++) if (i != 1 && i != 2) close(i);
-		open("nul", O_WRONLY);
-		execlp(x1, x1, "/c", arg, NULL);
-		_exit(1);
+			for (i = 0; i < FD_SETSIZE; i++) if (i != 1 && i != 2)
+				EINTRLOOP(rs, close(i));
+			EINTRLOOP(rs, open("nul", O_WRONLY));
+			EINTRLOOP(rs, execlp(cast_const_char x1, cast_const_char x1, "/c", cast_const_char arg, NULL));
+			_exit(1);
+		}
 	}
-	if (pid != -1) waitpid(pid, NULL, 0);
+#endif
+	if (pid != -1) EINTRLOOP(rp, waitpid(pid, NULL, 0));
 }
 
 int resize_window(int x, int y)
@@ -843,10 +1213,10 @@ int resize_window(int x, int y)
 	unsigned char *x1;
 	if (is_xterm()) return -1;
 	if (get_terminal_size(1, &old_x, &old_y)) return -1;
-	x1 = GETSHELL;
-	if (!x1) x1 = DEFAULT_SHELL;
+	x1 = cast_uchar GETSHELL;
+	if (!x1) x1 = cast_uchar DEFAULT_SHELL;
 	if (!is_winnt()) {
-		ct = GetConsoleTitle(buffer, sizeof buffer);
+		ct = GetConsoleTitleA(cast_char buffer, sizeof buffer);
 	}
 
 	call_resize(x1, x, y);
@@ -861,20 +1231,24 @@ int resize_window(int x, int y)
 	   */
 		if (!fullscreen && !get_terminal_size(1, &new_x, &new_y) && (new_x != x || new_y != y)) {
 			fullscreen = 1;
+#ifdef __CYGWIN__
 			keybd_event(VK_MENU, 0x38, 0, 0);
 			keybd_event(VK_RETURN, 0x1c, 0, 0);
 			keybd_event(VK_RETURN, 0x1c, KEYEVENTF_KEYUP, 0);
 			keybd_event(VK_MENU, 0x38, KEYEVENTF_KEYUP, 0);
+#endif
 			if (y != 25) call_resize(x1, 80, 25);
 			else call_resize(x1, 80, 50);
 			call_resize(x1, x, y);
 			if (get_terminal_size(1, &new_x, &new_y) || new_x != x || new_y != y) call_resize(x1, old_x, old_y);
+#ifdef __CYGWIN__
 			keybd_event(VK_MENU, 0x38, 0, 0);
 			keybd_event(VK_RETURN, 0x1c, 0, 0);
 			keybd_event(VK_RETURN, 0x1c, KEYEVENTF_KEYUP, 0);
 			keybd_event(VK_MENU, 0x38, KEYEVENTF_KEYUP, 0);
+#endif
 		}
-		if (ct) SetConsoleTitle(buffer);
+		if (ct) SetConsoleTitleA(cast_const_char buffer);
 	}
 	return 0;
 }
@@ -889,13 +1263,12 @@ static unsigned char fd_mutex_init = 0;
 int exe(unsigned char *path, int fg)
 {
 	int flags = P_SESSION;
-	pid_t pid;
+	pid_t pid, rs;
 	int ret;
 #ifdef G
 	int old0 = 0, old1 = 1, old2 = 2;
 #endif
 	unsigned char *shell;
-	fg=fg; /* ignore flag */
 	if (!(shell = GETSHELL)) shell = DEFAULT_SHELL;
 	if (is_xterm()) flags |= P_BACKGROUND;
 #ifdef G
@@ -905,147 +1278,116 @@ int exe(unsigned char *path, int fg)
 			fd_mutex_init = 1;
 		}
 		_fmutex_request(&fd_mutex, _FMR_IGNINT);
-		old0 = dup(0);
-		old1 = dup(1);
-		old2 = dup(2);
-		close(0);
-		close(1);
-		close(2);
-		open("con", O_RDONLY);
-		open("con", O_WRONLY);
-		open("con", O_WRONLY);
+		EINTRLOOP(old0, dup(0));
+		EINTRLOOP(old1, dup(1));
+		EINTRLOOP(old2, dup(2));
+		if (old0 >= 0) EINTRLOOP(rs, close(0));
+		if (old1 >= 0) EINTRLOOP(rs, close(1));
+		if (old2 >= 0) EINTRLOOP(rs, close(2));
+		if (old0 >= 0) EINTRLOOP(rs, open("con", O_RDONLY));
+		if (old1 >= 0) EINTRLOOP(rs, open("con", O_WRONLY));
+		if (old2 >= 0) EINTRLOOP(rs, open("con", O_WRONLY));
 	}
 #endif
 	pid = spawnlp(flags, shell, shell, "/c", path, NULL);
 #ifdef G
 	if (F) {
-		dup2(old0, 0);
-		dup2(old1, 1);
-		dup2(old2, 2);
-		close(old0);
-		close(old1);
-		close(old2);
+		if (old0 >= 0) EINTRLOOP(rs, dup2(old0, 0));
+		if (old1 >= 0) EINTRLOOP(rs, dup2(old1, 1));
+		if (old2 >= 0) EINTRLOOP(rs, dup2(old2, 2));
+		if (old0 >= 0) EINTRLOOP(rs, close(old0));
+		if (old1 >= 0) EINTRLOOP(rs, close(old1));
+		if (old2 >= 0) EINTRLOOP(rs, close(old2));
 		_fmutex_release(&fd_mutex);
 	}
 #endif
-	if (pid != -1) waitpid(pid, &ret, 0);
+	if (pid != -1) EINTRLOOP(rs, waitpid(pid, &ret, 0));
 	else ret = -1;
 	return ret;
 }
 
 unsigned char *get_clipboard_text(struct terminal *term)
 {
-	PTIB tib;
-	PPIB pib;
-	HAB hab;
-	HMQ hmq;
-	ULONG oldType;
 	unsigned char *ret = NULL;
 
-	DosGetInfoBlocks(&tib, &pib);
+	if (os2_init_pm()) return NULL;
 
-	oldType = pib->pib_ultype;
+	if (WinOpenClipbrd(os2_hab)) {
+		ULONG fmtInfo = 0;
 
-	pib->pib_ultype = 3;
+		if (WinQueryClipbrdFmtInfo(os2_hab, CF_TEXT, &fmtInfo)!=FALSE)
+		{
+			ULONG selClipText = WinQueryClipbrdData(os2_hab, CF_TEXT);
 
-	if ((hab = WinInitialize(0)) != NULLHANDLE) {
-		if ((hmq = WinCreateMsgQueue(hab, 0)) != NULLHANDLE) {
-
-			if (WinOpenClipbrd(hab)) {
-				ULONG fmtInfo = 0;
-
-				if (WinQueryClipbrdFmtInfo(hab, CF_TEXT, &fmtInfo)!=FALSE)
-				{
-					ULONG selClipText = WinQueryClipbrdData(hab, CF_TEXT);
-
-					if (selClipText)
-					{
-						unsigned char *u;
-						PCHAR pchClipText = (PCHAR)selClipText;
-						ret = mem_alloc(strlen(pchClipText)+1);
-						strcpy(ret, pchClipText);
-						while ((u = strchr(ret, 13))) memmove(u, u + 1, strlen(u + 1) + 1);
-					}
-				}
-
-				WinCloseClipbrd(hab);
+			if (selClipText) {
+				unsigned char *u;
+				PCHAR pchClipText = (PCHAR)selClipText;
+				ret = stracpy(pchClipText);
+				while ((u = cast_uchar strchr(cast_const_char ret, 13))) memmove(u, u + 1, strlen(cast_const_char(u + 1)) + 1);
 			}
-
-#ifdef G
-			if (F && ret) {
-				static int cp = -1;
-				struct conv_table *ct;
-				unsigned char *d;
-				if (cp == -1) {
-					int c = WinQueryCp(hmq);
-					unsigned char a[64];
-					snprintf(a, 64, "%d", c);
-					if ((cp = get_cp_index(a)) < 0 || is_cp_special(cp)) cp = 0;
-				}
-				ct = get_translation_table(cp, get_cp_index("utf-8"));
-				d = convert_string(ct, ret, strlen(ret), NULL);
-				mem_free(ret);
-				ret = d;
-			}
-#endif
-			WinDestroyMsgQueue(hmq);
 		}
-		WinTerminate(hab);
+
+		WinCloseClipbrd(os2_hab);
 	}
 
-	pib->pib_ultype = oldType;
+#ifdef G
+	if (F && ret) {
+		static int cp = -1;
+		struct conv_table *ct;
+		unsigned char *d;
+		if (cp == -1) {
+			int c = WinQueryCp(os2_hmq);
+			unsigned char a[64];
+			snprintf(cast_char a, 64, "%d", c);
+			if ((cp = get_cp_index(a)) < 0 || cp == utf8_table) cp = 0;
+		}
+		ct = get_translation_table(cp, utf8_table);
+		d = convert_string(ct, ret, strlen(cast_const_char ret), NULL);
+		mem_free(ret);
+		ret = d;
+	}
+#endif
+
+	os2_exit_pm();
 
 	return ret;
 }
 
-void set_clipboard_text(struct terminal * term, unsigned char *data)
+void set_clipboard_text(struct terminal *term, unsigned char *data)
 {
-	PTIB tib;
-	PPIB pib;
-	HAB hab;
-	HMQ hmq;
-	ULONG oldType;
-
 	unsigned char *d = NULL;
-	
-	DosGetInfoBlocks(&tib, &pib);
 
-	oldType = pib->pib_ultype;
+	if (os2_init_pm()) return;
 
-	pib->pib_ultype = 3;
-
-	if ((hab = WinInitialize(0)) != NULLHANDLE) {
-		if ((hmq = WinCreateMsgQueue(hab, 0)) != NULLHANDLE) {
 #ifdef G
-			if (F) {
-				static int cp = -1;
-				struct conv_table *ct;
-				if (cp == -1) {
-					int c = WinQueryCp(hmq);
-					unsigned char a[64];
-					snprintf(a, 64, "%d", c);
-					if ((cp = get_cp_index(a)) < 0 || is_cp_special(cp)) cp = 0;
-				}
-				ct = get_translation_table(get_cp_index("utf-8"), cp);
-				d = convert_string(ct, data, strlen(data), NULL);
-				data = d;
-			}
-#endif
-			if (WinOpenClipbrd(hab)) {
-				PVOID pvShrObject = NULL;
-				if (DosAllocSharedMem(&pvShrObject, NULL, strlen(data)+1, PAG_COMMIT | PAG_WRITE | OBJ_GIVEABLE) == NO_ERROR) {
-					strcpy(pvShrObject, data);
-					WinEmptyClipbrd(hab);
-					WinSetClipbrdData(hab, (ULONG)pvShrObject, CF_TEXT, CFI_POINTER);
-				}
-				WinCloseClipbrd(hab);
-			}
-			WinDestroyMsgQueue(hmq);
+	if (F) {
+		static int cp = -1;
+		struct conv_table *ct;
+		unsigned char *p;
+		if (cp == -1) {
+			int c = WinQueryCp(os2_hmq);
+			unsigned char a[64];
+			snprintf(a, 64, "%d", c);
+			if ((cp = get_cp_index(a)) < 0 || cp == utf8_table) cp = 0;
 		}
-		WinTerminate(hab);
+		ct = get_translation_table(utf8_table, cp);
+		d = convert_string(ct, data, strlen(cast_const_char data), NULL);
+		for (p = cast_uchar strchr(cast_const_char d, 1); p; p = cast_uchar strchr(cast_const_char(p + 1), 1))
+			*p = ' ';
+		data = d;
+	}
+#endif
+	if (WinOpenClipbrd(os2_hab)) {
+		PVOID pvShrObject = NULL;
+		if (DosAllocSharedMem(&pvShrObject, NULL, strlen(cast_const_char data)+1, PAG_COMMIT | PAG_READ | PAG_WRITE | OBJ_GIVEABLE) == NO_ERROR) {
+			strcpy(cast_char pvShrObject, cast_const_char data);
+			WinEmptyClipbrd(os2_hab);
+			WinSetClipbrdData(os2_hab, (ULONG)pvShrObject, CF_TEXT, CFI_POINTER);
+		}
+		WinCloseClipbrd(os2_hab);
 	}
 
-	pib->pib_ultype = oldType;
+	os2_exit_pm();
 
 	if (d) mem_free(d);
 }
@@ -1058,40 +1400,27 @@ int clipboard_support(struct terminal *term)
 unsigned char *get_window_title(void)
 {
 #ifndef OS2_DEBUG
-	/*char *org_switch_title;*/
-	unsigned char *org_win_title = NULL;
-	static PTIB tib = NULL;
-	static PPIB pib = NULL;
-	ULONG oldType;
-	HSWITCH hSw = NULLHANDLE;
+	unsigned char *win_title = NULL;
 	SWCNTRL swData;
-	HAB hab;
-	HMQ hmq;
 
-	/* save current process title */
-
-	if (!pib) DosGetInfoBlocks(&tib, &pib);
-	oldType = pib->pib_ultype;
 	memset(&swData, 0, sizeof swData);
-	if (hSw == NULLHANDLE) hSw = WinQuerySwitchHandle(0, pib->pib_ulpid);
-	if (hSw != NULLHANDLE && !WinQuerySwitchEntry(hSw, &swData)) {
-		/*org_switch_title = mem_alloc(strlen(swData.szSwtitle)+1);
-		strcpy(org_switch_title, swData.szSwtitle);*/
-		/* Go to PM */
-		pib->pib_ultype = 3;
-		if ((hab = WinInitialize(0)) != NULLHANDLE) {
-			if ((hmq = WinCreateMsgQueue(hab, 0)) != NULLHANDLE) {
-				org_win_title = mem_alloc(MAXNAMEL+1);
-				WinQueryWindowText(swData.hwnd, MAXNAMEL+1, org_win_title);
-				org_win_title[MAXNAMEL] = 0;
-				/* back From PM */
-				WinDestroyMsgQueue(hmq);
+	if (os2_switchhandle != NULLHANDLE && !WinQuerySwitchEntry(os2_switchhandle, &swData)) {
+		swData.szSwtitle[MAXNAMEL - 1] = 0;
+		win_title = stracpy(swData.szSwtitle);
+		if (swData.hwnd != NULLHANDLE && !os2_init_pm()) {
+			LONG len = WinQueryWindowTextLength(swData.hwnd);
+			if (len > 0) {
+				mem_free(win_title);
+				win_title = mem_alloc(len + 1);
+				win_title[0] = 0;
+				WinQueryWindowText(swData.hwnd, len + 1, win_title);
+				win_title[len] = 0;
 			}
-			WinTerminate(hab);
+			os2_exit_pm();
 		}
-		pib->pib_ultype = oldType;
 	}
-	return org_win_title;
+
+	return win_title;
 #else
 	return NULL;
 #endif
@@ -1100,34 +1429,19 @@ unsigned char *get_window_title(void)
 void set_window_title(unsigned char *title)
 {
 #ifndef OS2_DEBUG
-	static PTIB tib;
-	static PPIB pib;
-	ULONG oldType;
-	static HSWITCH hSw;
 	SWCNTRL swData;
-	HAB hab;
-	HMQ hmq;
+
 	if (!title) return;
-	if (!pib) DosGetInfoBlocks(&tib, &pib);
-	oldType = pib->pib_ultype;
+
 	memset(&swData, 0, sizeof swData);
-	if (hSw == NULLHANDLE) hSw = WinQuerySwitchHandle(0, pib->pib_ulpid);
-	if (hSw!=NULLHANDLE && !WinQuerySwitchEntry(hSw, &swData)) {
+	if (os2_switchhandle != NULLHANDLE && !WinQuerySwitchEntry(os2_switchhandle, &swData)) {
 		safe_strncpy(swData.szSwtitle, title, MAXNAMEL);
-		WinChangeSwitchEntry(hSw, &swData);
-		/* Go to PM */
-		pib->pib_ultype = 3;
-		if ((hab = WinInitialize(0)) != NULLHANDLE) {
-			if ((hmq = WinCreateMsgQueue(hab, 0)) != NULLHANDLE) {
-				if(swData.hwnd)
-					WinSetWindowText(swData.hwnd, title);
-					/* back From PM */
-				WinDestroyMsgQueue(hmq);
-			}
-			WinTerminate(hab);
+		WinChangeSwitchEntry(os2_switchhandle, &swData);
+		if (swData.hwnd != NULLHANDLE && !os2_init_pm()) {
+			WinSetWindowText(swData.hwnd, title);
+			os2_exit_pm();
 		}
 	}
-	pib->pib_ultype = oldType;
 #endif
 }
 
@@ -1137,6 +1451,8 @@ int resize_window(int x, int y)
 {
 	int xfont, yfont;
 	A_DECL(VIOMODEINFO, vmi);
+	SWCNTRL swData;
+
 	resize_count++;
 	if (is_xterm()) return -1;
 	vmi->cb = sizeof(*vmi);
@@ -1153,14 +1469,28 @@ int resize_window(int x, int y)
 			vmi->buf_length = vmi->full_length = vmi->partial_length = x * ((vmi->vres + yfont - 1) / yfont) * 2;
 			vmi->full_length = (vmi->full_length + 4095) & ~4095;
 			vmi->partial_length = (vmi->partial_length + 4095) & ~4095;
-			if (!VioSetMode(vmi, 0)) return 0;
+			if (!VioSetMode(vmi, 0)) goto resized;
 		}
 	return -1;
+
+	resized:
+	memset(&swData, 0, sizeof swData);
+	if (os2_switchhandle != NULLHANDLE && !WinQuerySwitchEntry(os2_switchhandle, &swData) && swData.hwnd != NULLHANDLE && !os2_init_pm()) {
+		SWP swp;
+		if (WinQueryWindowPos(swData.hwnd, &swp) && !(swp.fl & (SWP_MAXIMIZE | SWP_MINIMIZE | SWP_HIDE))) {
+			const int expand = 16383;
+			WinSetWindowPos(swData.hwnd, NULLHANDLE, swp.x, swp.y - expand, swp.cx + expand, swp.cy + expand, SWP_MOVE | SWP_SIZE);
+		}
+		os2_exit_pm();
+	}
+	return 0;
 }
 
 #endif
 
 /* Threads */
+
+#if (defined(HAVE_BEGINTHREAD) && defined(OS2)) || defined(BEOS) || defined(HAVE_PTHREADS) || defined(HAVE_ATHEOS_THREADS_H)
 
 struct tdata {
 	void (*fn)(void *, int);
@@ -1168,14 +1498,13 @@ struct tdata {
 	unsigned char data[1];
 };
 
-#if defined(HAVE_BEGINTHREAD) || defined(BEOS) || defined(HAVE_PTHREADS) || defined(HAVE_ATHEOS_THREADS_H)
-
 static void bgt(struct tdata *t)
 {
+	int rs;
 	ignore_signals();
 	t->fn(t->data, t->h);
-	write(t->h, "x", 1);
-	close(t->h);
+	EINTRLOOP(rs, write(t->h, "x", 1));
+	EINTRLOOP(rs, close(t->h));
 	free(t);
 }
 
@@ -1249,7 +1578,7 @@ int start_thr(void (*fn)(void *), void *data, unsigned char *name)
 	} else if (acquire_sem(thr_sem) < B_NO_ERROR) return -1;
 	retry:
 	if (!(thrd = malloc(sizeof(struct active_thread)))) {
-		if (out_of_memory(NULL, 0))
+		if (out_of_memory(0, NULL, 0))
 			goto retry;
 		goto rel;
 	}
@@ -1284,19 +1613,20 @@ int start_thread(void (*fn)(void *, int), void *ptr, int l)
 {
 	int p[2];
 	struct tdata *t;
+	int rs;
 	if (c_pipe(p) < 0) return -1;
 	retry:
 	if (!(t = malloc(sizeof(struct tdata) + l))) {
-		if (out_of_memory(NULL, 0))
+		if (out_of_memory(0, NULL, 0))
 			goto retry;
 		return -1;
 	}
 	t->fn = fn;
 	t->h = p[1];
 	memcpy(t->data, ptr, l);
-	if (start_thr((void (*)(void *))bgt, t, "links_thread") < 0) {
-		close(p[0]);
-		close(p[1]);
+	if (start_thr((void (*)(void *))bgt, t, cast_uchar "links_thread") < 0) {
+		EINTRLOOP(rs, close(p[0]));
+		EINTRLOOP(rs, close(p[1]));
 		free(t);
 		return -1;
 	}
@@ -1304,18 +1634,19 @@ int start_thread(void (*fn)(void *, int), void *ptr, int l)
 }
 
 
-#elif defined(HAVE_BEGINTHREAD)
+#elif defined(HAVE_BEGINTHREAD) && defined(OS2)
 
 int start_thread(void (*fn)(void *, int), void *ptr, int l)
 {
 	int p[2];
 	struct tdata *t;
+	int rs;
 	if (c_pipe(p) < 0) return -1;
-	fcntl(p[0], F_SETFL, O_NONBLOCK);
-	fcntl(p[1], F_SETFL, O_NONBLOCK);
+	EINTRLOOP(rs, fcntl(p[0], F_SETFL, O_NONBLOCK));
+	EINTRLOOP(rs, fcntl(p[1], F_SETFL, O_NONBLOCK));
 	retry:
 	if (!(t = malloc(sizeof(struct tdata) + l))) {
-		if (out_of_memory(NULL, 0))
+		if (out_of_memory(0, NULL, 0))
 			goto retry;
 		return -1;
 	}
@@ -1323,8 +1654,8 @@ int start_thread(void (*fn)(void *, int), void *ptr, int l)
 	t->h = p[1];
 	memcpy(t->data, ptr, l);
 	if (_beginthread((void (*)(void *))bgt, NULL, 65536, t) == -1) {
-		close(p[0]);
-		close(p[1]);
+		EINTRLOOP(rs, close(p[0]));
+		EINTRLOOP(rs, close(p[1]));
 		free(t);
 		return -1;
 	}
@@ -1340,21 +1671,9 @@ static void input_thread(void *p)
 {
 	unsigned char c[2];
 	int h = (int)p;
+	int rs;
 	ignore_signals();
 	while (1) {
-		/*c[0] = _read_kbd(0, 1, 1);
-		if (c[0]) if (write(h, c, 1) <= 0) break;
-		else {
-			int w;
-			printf("1");fflush(stdout);
-			c[1] = _read_kbd(0, 1, 1);
-			printf("2");fflush(stdout);
-			w = write(h, c, 2);
-			printf("3");fflush(stdout);
-			if (w <= 0) break;
-			if (w == 1) if (write(h, c+1, 1) <= 0) break;
-			printf("4");fflush(stdout);
-		}*/
            /* for the records: 
                  _read_kbd(0, 1, 1) will
                  read a char, don't echo it, wait for one available and
@@ -1362,9 +1681,9 @@ static void input_thread(void *p)
                  Knowing that, I suggest we replace this call completly!
             */
                 *c = _read_kbd(0, 1, 1);
-                write(h, c, 1);
+                EINTRLOOP(rs, write(h, c, 1));
 	}
-	close(h);
+	EINTRLOOP(rs, close(h));
 }
 #endif /* #ifdef HAVE__READ_KBD */
 
@@ -1387,9 +1706,67 @@ struct os2_mouse_spec {
 	int terminate;
 };
 
+#define MOU_EMULATE_CURSOR
+
+#ifdef MOU_EMULATE_CURSOR
+static int mouse_x = -1, mouse_y = -1;
+static unsigned char mouse_attr;
+#endif
+
+static void mouse_remove_pointer(void)
+{
+#ifndef MOU_EMULATE_CURSOR
+	A_DECL(NOPTRRECT, pa);
+	static int x = -1, y = -1;
+	static tcount c = -1;
+	if (x == -1 || y == -1 || (c != resize_count)) get_terminal_size(1, &x, &y), c = resize_count;
+	pa->row = 0;
+	pa->col = 0;
+	pa->cRow = y - 1;
+	pa->cCol = x - 1;
+	MouRemovePtr(pa, mouse_h);
+#else
+	if (mouse_x >= 0 && mouse_y >= 0) {
+		VioWrtNAttr(&mouse_attr, 1, mouse_y, mouse_x, 0);
+	}
+	mouse_x = -1, mouse_y = -1;
+#endif
+}
+
+static void mouse_draw_pointer(int x, int y)
+{
+#ifndef MOU_EMULATE_CURSOR
+	MouDrawPtr(mouse_h);
+#else
+	unsigned char str[4];
+	USHORT str_len;
+	unsigned char attr;
+	unsigned char fg, bg;
+	int r;
+	if (!os2_full_screen)
+		return;
+	DosSetPriority(PRTYS_THREAD, PRTYC_TIMECRITICAL, 0, 0);
+	if (mouse_x == x && mouse_y == y)
+		return;
+	mouse_remove_pointer();
+	str_len = sizeof(str);
+	r = VioReadCellStr(str, &str_len, y, x, 0);
+	if (r || str_len < 2) return;
+	mouse_attr = str[1];
+	fg = mouse_attr & 0x07;
+	bg = (mouse_attr & 0x70) >> 4;
+	if (fg == bg) fg ^= 0x07, bg ^= 0x07;
+	attr = (mouse_attr & 0x88) | (fg << 4) | bg;
+	r = VioWrtNAttr(&attr, 1, y, x, 0);
+	if (r) return;
+	mouse_x = x, mouse_y = y, mouse_attr = str[1];
+#endif
+}
+
 static void mouse_thread(void *p)
 {
 	int status;
+	int rs;
 	struct os2_mouse_spec *oms = p;
 	A_DECL(HMOU, mh);
 	A_DECL(MOUEVENTINFO, ms);
@@ -1413,16 +1790,16 @@ static void mouse_thread(void *p)
 #ifdef HAVE_SYS_FMUTEX_H
 		_fmutex_request(&mouse_mutex, _FMR_IGNINT);
 #endif
-		if (!oms->terminate) MouDrawPtr(*mh);
+		if (!oms->terminate) mouse_draw_pointer(ms->col, ms->row);
 #ifdef HAVE_SYS_FMUTEX_H
 		_fmutex_release(&mouse_mutex);
 #endif
 		ev.x = ms->col;
 		ev.y = ms->row;
 		/*debug("status: %d %d %d", ms->col, ms->row, ms->fs);*/
-		if (ms->fs & (MOUSE_BN1_DOWN | MOUSE_BN2_DOWN | MOUSE_BN3_DOWN)) ev.b = status = B_DOWN | (ms->fs & MOUSE_BN1_DOWN ? B_LEFT : ms->fs & MOUSE_BN2_DOWN ? B_MIDDLE : B_RIGHT);
+		if (ms->fs & (MOUSE_BN1_DOWN | MOUSE_BN2_DOWN | MOUSE_BN3_DOWN)) ev.b = status = B_DOWN | (ms->fs & MOUSE_BN1_DOWN ? B_LEFT : ms->fs & MOUSE_BN2_DOWN ? B_RIGHT : B_MIDDLE);
 		else if (ms->fs & (MOUSE_MOTION_WITH_BN1_DOWN | MOUSE_MOTION_WITH_BN2_DOWN | MOUSE_MOTION_WITH_BN3_DOWN)) {
-			int b = ms->fs & MOUSE_MOTION_WITH_BN1_DOWN ? B_LEFT : ms->fs & MOUSE_MOTION_WITH_BN2_DOWN ? B_MIDDLE : B_RIGHT;
+			int b = ms->fs & MOUSE_MOTION_WITH_BN1_DOWN ? B_LEFT : ms->fs & MOUSE_MOTION_WITH_BN2_DOWN ? B_RIGHT : B_MIDDLE;
 			if (status == -1) b |= B_DOWN;
 			else b |= B_DRAG;
 			ev.b = status = b;
@@ -1443,14 +1820,15 @@ static void mouse_thread(void *p)
 	_fmutex_release(&mouse_mutex);
 #endif
 	ret:
-	close(oms->p[1]);
+	EINTRLOOP(rs, close(oms->p[1]));
 	/*free(oms);*/
 }
 
 static void mouse_handle(struct os2_mouse_spec *oms)
 {
 	int r;
-	if ((r = read(oms->p[0], oms->buffer + oms->bufptr, sizeof(struct event) - oms->bufptr)) <= 0) {
+	EINTRLOOP(r, read(oms->p[0], oms->buffer + oms->bufptr, sizeof(struct event) - oms->bufptr));
+	if (r <= 0) {
 		unhandle_mouse(oms);
 		return;
 	}
@@ -1473,7 +1851,7 @@ void *handle_mouse(int cons, void (*fn)(void *, unsigned char *, int), void *dat
 		/* This is never freed but it's allocated only once */
 	retry:
 	if (!(oms = malloc(sizeof(struct os2_mouse_spec)))) {
-		if (out_of_memory(NULL, 0))
+		if (out_of_memory(0, NULL, 0))
 			goto retry;
 		return NULL;
 	}
@@ -1494,28 +1872,26 @@ void *handle_mouse(int cons, void (*fn)(void *, unsigned char *, int), void *dat
 void unhandle_mouse(void *om)
 {
 	struct os2_mouse_spec *oms = om;
+	int rs;
 	want_draw();
 	oms->terminate = 1;
 	set_handlers(oms->p[0], NULL, NULL, NULL, NULL);
-	close(oms->p[0]);
+	EINTRLOOP(rs, close(oms->p[0]));
 	done_draw();
 }
 
 void want_draw(void)
 {
-	A_DECL(NOPTRRECT, pa);
+	static int ansi = 0;
 #ifdef HAVE_SYS_FMUTEX_H
 	if (mouse_mutex_init) _fmutex_request(&mouse_mutex, _FMR_IGNINT);
 #endif
+	if (!ansi) {
+		VioSetAnsi(1, 0);
+		ansi = 1;
+	}
 	if (mouse_h != -1) {
-		static int x = -1, y = -1;
-		static tcount c = -1;
-		if (x == -1 || y == -1 || (c != resize_count)) get_terminal_size(1, &x, &y), c = resize_count;
-		pa->row = 0;
-		pa->col = 0;
-		pa->cRow = y - 1;
-		pa->cCol = x - 1;
-		MouRemovePtr(pa, mouse_h);
+		mouse_remove_pointer();
 	}
 }
 
@@ -1537,12 +1913,13 @@ int start_thread(void (*fn)(void *, int), void *ptr, int l)
 	pthread_t thread;
 	struct tdata *t;
 	int p[2];
+	int rs;
 	if (c_pipe(p) < 0) return -1;
-	fcntl(p[0], F_SETFL, O_NONBLOCK);
-	fcntl(p[1], F_SETFL, O_NONBLOCK);
+	EINTRLOOP(rs, fcntl(p[0], F_SETFL, O_NONBLOCK));
+	EINTRLOOP(rs, fcntl(p[1], F_SETFL, O_NONBLOCK));
 	retry:
 	if (!(t = malloc(sizeof(struct tdata) + l))) {
-		if (out_of_memory(NULL, 0))
+		if (out_of_memory(0, NULL, 0))
 			goto retry;
 		return -1;
 	}
@@ -1550,8 +1927,8 @@ int start_thread(void (*fn)(void *, int), void *ptr, int l)
 	t->h = p[1];
 	memcpy(t->data, ptr, l);
 	if (pthread_create(&thread, NULL, (void *(*)(void *))bgpt, t)) {
-		close(p[0]);
-		close(p[1]);
+		EINTRLOOP(rs, close(p[0]));
+		EINTRLOOP(rs, close(p[1]));
 		free(t);
 		return -1;
 	}
@@ -1565,14 +1942,15 @@ int start_thread(void (*fn)(void *, int), void *ptr, int l)
 int start_thread(void (*fn)(void *, int), void *ptr, int l)
 {
 	int p[2];
+	int rs;
 	thread_id f;
 	struct tdata *t;
 	if (c_pipe(p) < 0) return -1;
-	fcntl(p[0], F_SETFL, O_NONBLOCK);
-	fcntl(p[1], F_SETFL, O_NONBLOCK);
+	EINTRLOOP(rs, fcntl(p[0], F_SETFL, O_NONBLOCK));
+	EINTRLOOP(rs, fcntl(p[1], F_SETFL, O_NONBLOCK));
 	retry:
 	if (!(t = malloc(sizeof(struct tdata) + l))) {
-		if (out_of_memory(NULL, 0))
+		if (out_of_memory(0, NULL, 0))
 			goto retry;
 		return -1;
 	}
@@ -1580,8 +1958,8 @@ int start_thread(void (*fn)(void *, int), void *ptr, int l)
 	t->h = p[1];
 	memcpy(t->data, ptr, l);
 	if ((f = spawn_thread("links_lookup", abgt, 0, 0, t)) == -1) {
-		close(p[0]);
-		close(p[1]);
+		EINTRLOOP(rs, close(p[0]));
+		EINTRLOOP(rs, close(p[1]));
 		mem_free(t);
 		return -1;
 	}
@@ -1595,23 +1973,25 @@ int start_thread(void (*fn)(void *, int), void *ptr, int l)
 {
 	int p[2];
 	pid_t f;
+	int rs;
 	if (c_pipe(p) < 0) return -1;
-	fcntl(p[0], F_SETFL, O_NONBLOCK);
-	fcntl(p[1], F_SETFL, O_NONBLOCK);
-	if (!(f = fork())) {
+	EINTRLOOP(rs, fcntl(p[0], F_SETFL, O_NONBLOCK));
+	EINTRLOOP(rs, fcntl(p[1], F_SETFL, O_NONBLOCK));
+	EINTRLOOP(f, fork());
+	if (!f) {
 		close_fork_tty();
-		close(p[0]);
+		EINTRLOOP(rs, close(p[0]));
 		fn(ptr, p[1]);
-		write(p[1], "x", 1);
-		close(p[1]);
+		EINTRLOOP(rs, write(p[1], "x", 1));
+		EINTRLOOP(rs, close(p[1]));
 		_exit(0);
 	}
 	if (f == -1) {
-		close(p[0]);
-		close(p[1]);
+		EINTRLOOP(rs, close(p[0]));
+		EINTRLOOP(rs, close(p[1]));
 		return -1;
 	}
-	close(p[1]);
+	EINTRLOOP(rs, close(p[1]));
 	return p[0];
 }
 
@@ -1718,6 +2098,7 @@ static unsigned char gpm_tstp_valid;
 static void save_gpm_signals(void)
 {
 	sigset_t sig;
+	int rs;
 	sigemptyset(&sig);
 #ifdef SIGWINCH
 	sigaddset(&sig, SIGWINCH);
@@ -1725,24 +2106,31 @@ static void save_gpm_signals(void)
 #ifdef SIGTSTP
 	sigaddset(&sig, SIGTSTP);
 #endif
-	gpm_sigset_valid = !sigprocmask(SIG_BLOCK, &sig, &gpm_sigset);
+	EINTRLOOP(rs, sigprocmask(SIG_BLOCK, &sig, &gpm_sigset));
+	gpm_sigset_valid = !rs;
 #ifdef SIGWINCH
-	gpm_winch_valid = !sigaction(SIGWINCH, NULL, &gpm_winch);
+	EINTRLOOP(rs, sigaction(SIGWINCH, NULL, &gpm_winch));
+	gpm_winch_valid = !rs;
 #endif
 #ifdef SIGTSTP
-	gpm_tstp_valid = !sigaction(SIGTSTP, NULL, &gpm_tstp);
+	EINTRLOOP(rs, sigaction(SIGTSTP, NULL, &gpm_tstp));
+	gpm_tstp_valid = !rs;
 #endif
 }
 
 static void restore_gpm_signals(void)
 {
+	int rs;
 #ifdef SIGWINCH
-	if (gpm_winch_valid) sigaction(SIGWINCH, &gpm_winch, NULL);
+	if (gpm_winch_valid)
+		EINTRLOOP(rs, sigaction(SIGWINCH, &gpm_winch, NULL));
 #endif
 #ifdef SIGTSTP
-	if (gpm_tstp_valid) sigaction(SIGTSTP, &gpm_tstp, NULL);
+	if (gpm_tstp_valid)
+		EINTRLOOP(rs, sigaction(SIGTSTP, &gpm_tstp, NULL));
 #endif
-	if (gpm_sigset_valid) sigprocmask(SIG_SETMASK, &gpm_sigset, NULL);
+	if (gpm_sigset_valid)
+		EINTRLOOP(rs, sigprocmask(SIG_SETMASK, &gpm_sigset, NULL));
 }
 
 static void gpm_mouse_in(struct gpm_mouse_spec *gms)
@@ -1805,6 +2193,16 @@ void unhandle_mouse(void *h)
 	mem_free(gms);
 }
 
+void add_gpm_version(unsigned char **s, int *l)
+{
+	add_to_str(s, l, cast_uchar "GPM");
+#ifdef HAVE_GPM_GETLIBVERSION
+	add_to_str(s, l, cast_uchar " (");
+	add_to_str(s, l, cast_uchar Gpm_GetLibVersion(NULL));
+	add_to_str(s, l, cast_uchar ")");
+#endif
+}
+
 #elif !defined(USING_OS2_MOUSE)
 
 void *handle_mouse(int cons, void (*fn)(void *, unsigned char *, int), void *data) { return NULL; }
@@ -1835,7 +2233,7 @@ int get_system_env(void)
 
 int get_system_env(void)
 {
-	unsigned char *term = getenv("TERM");
+	unsigned char *term = cast_uchar getenv("TERM");
 	if (!term || (upcase(term[0]) == 'B' && upcase(term[1]) == 'E')) return ENV_BE;
 	return 0;
 }
@@ -1873,105 +2271,114 @@ int get_system_env(void)
 static void exec_new_links(struct terminal *term, unsigned char *xterm, unsigned char *exe, unsigned char *param)
 {
 	unsigned char *str;
-	str = mem_alloc(strlen(xterm) + 1 + strlen(exe) + 1 + strlen(param) + 1);
-	if (*xterm) sprintf(str, "%s %s %s", xterm, exe, param);
-	else sprintf(str, "%s %s", exe, param);
-	exec_on_terminal(term, str, "", 2);
+	str = mem_alloc(strlen(cast_const_char xterm) + 1 + strlen(cast_const_char exe) + 1 + strlen(cast_const_char param) + 1);
+	if (*xterm) sprintf(cast_char str, "%s %s %s", xterm, exe, param);
+	else sprintf(cast_char str, "%s %s", exe, param);
+	exec_on_terminal(term, str, cast_uchar "", 2);
 	mem_free(str);
 }
 
-static void open_in_new_twterm(struct terminal *term, unsigned char *exe, unsigned char *param)
+static int open_in_new_twterm(struct terminal *term, unsigned char *exe, unsigned char *param)
 {
 	unsigned char *twterm;
-	if (!(twterm = getenv("LINKS_TWTERM"))) twterm = "twterm -e";
+	if (!(twterm = cast_uchar getenv("LINKS_TWTERM"))) twterm = cast_uchar "twterm -e";
 	exec_new_links(term, twterm, exe, param);
+	return 0;
 }
 
-static void open_in_new_xterm(struct terminal *term, unsigned char *exe, unsigned char *param)
+static int open_in_new_xterm(struct terminal *term, unsigned char *exe, unsigned char *param)
 {
 	unsigned char *xterm;
-	if (!(xterm = getenv("LINKS_XTERM"))) xterm = "xterm -e";
+	if (!(xterm = cast_uchar getenv("LINKS_XTERM"))) xterm = cast_uchar "xterm -e";
 	exec_new_links(term, xterm, exe, param);
+	return 0;
 }
 
-static void open_in_new_screen(struct terminal *term, unsigned char *exe, unsigned char *param)
+static int open_in_new_screen(struct terminal *term, unsigned char *exe, unsigned char *param)
 {
-	exec_new_links(term, "screen", exe, param);
+	exec_new_links(term, cast_uchar "screen", exe, param);
+	return 0;
 }
 
 #ifdef OS2
-static void open_in_new_vio(struct terminal *term, unsigned char *exe, unsigned char *param)
+static int open_in_new_vio(struct terminal *term, unsigned char *exe, unsigned char *param)
 {
-	unsigned char *x = stracpy("\"");
+	unsigned char *x = stracpy(cast_uchar "\"");
 	add_to_strn(&x, exe);
-	add_to_strn(&x, "\"");
-	exec_new_links(term, "start \"Links\" /c /f /win", x, param);
+	add_to_strn(&x, cast_uchar "\"");
+	exec_new_links(term, cast_uchar "start \"Links\" /c /f /win", x, param);
 	mem_free(x);
+	return 0;
 }
 
-static void open_in_new_fullscreen(struct terminal *term, unsigned char *exe, unsigned char *param)
+static int open_in_new_fullscreen(struct terminal *term, unsigned char *exe, unsigned char *param)
 {
-	unsigned char *x = stracpy("\"");
+	unsigned char *x = stracpy(cast_uchar "\"");
 	add_to_strn(&x, exe);
-	add_to_strn(&x, "\"");
-	exec_new_links(term, "start \"Links\" /c /f /fs", x, param);
+	add_to_strn(&x, cast_uchar "\"");
+	exec_new_links(term, cast_uchar "start \"Links\" /c /f /fs", x, param);
 	mem_free(x);
+	return 0;
 }
 #endif
 
 #ifdef WIN32
-static void open_in_new_win32(struct terminal *term, unsigned char *exe, unsigned char *param)
+static int open_in_new_win32(struct terminal *term, unsigned char *exe, unsigned char *param)
 {
-	exec_new_links(term, "", exe, param);
+	exec_new_links(term, cast_uchar "", exe, param);
+	return 0;
 }
 #endif
 
 #ifdef INTERIX
-static void open_in_new_interix(struct terminal *term, unsigned char *exe, unsigned char *param)
+static int open_in_new_interix(struct terminal *term, unsigned char *exe, unsigned char *param)
 {
 	unsigned char *param_x = stracpy(param);
-	add_to_strn(&param_x, "'");
-	exec_new_links(term, INTERIX_START_COMMAND " '\"Links\"' posix /u /c /bin/sh -c '", exe, param_x);
+	add_to_strn(&param_x, cast_uchar "'");
+	exec_new_links(term, cast_uchar(INTERIX_START_COMMAND " '\"Links\"' posix /u /c /bin/sh -c '"), exe, param_x);
 	mem_free(param_x);
+	return 0;
 }
 #endif
 
 #ifdef BEOS
-static void open_in_new_be(struct terminal *term, unsigned char *exe, unsigned char *param)
+static int open_in_new_be(struct terminal *term, unsigned char *exe, unsigned char *param)
 {
-	exec_new_links(term, "Terminal", exe, param);
+	exec_new_links(term, cast_uchar "Terminal", exe, param);
+	return 0;
 }
 #endif
 
 #ifdef G
-static void open_in_new_g(struct terminal *term, unsigned char *exe, unsigned char *param)
+static int open_in_new_g(struct terminal *term, unsigned char *exe, unsigned char *param)
 {
 	void *info;
-	unsigned char *target=NULL;
+	unsigned char *target = NULL;
 	int len;
 	int base = 0;
-	unsigned char *url = "";
-	if (!cmpbeg(param, "-target "))
-	{
-		unsigned char *p;
-		target=param+strlen("-target ");
-		for (p=target;*p!=' '&&*p;p++)
-			;
-		*p=0;
-		param=p+1;
-	}	
-	if (!cmpbeg(param, "-base-session ")) {
-		base = atoi(param + strlen("-base-session "));
-	} else {
-		url = param;
+	unsigned char *url;
+	if (!cmpbeg(param, cast_uchar "-base-session ")) {
+		param = cast_uchar strchr(cast_const_char param, ' ') + 1;
+		base = atoi(cast_const_char param);
+		param += strcspn(cast_const_char param, " ");
+		if (*param == ' ') param++;
 	}
-	if ((info = create_session_info(base, url, target, &len))) attach_g_terminal(info, len);
+	if (!cmpbeg(param, cast_uchar "-target ")) {
+		param = cast_uchar strchr(cast_const_char param, ' ') + 1;
+		target = param;
+		param += strcspn(cast_const_char param, " ");
+		if (*param == ' ') *param++ = 0;
+	}	
+	url = param;
+	if (!(info = create_session_info(base, url, target, &len)))
+		return -1;
+	return attach_g_terminal(info, len);
 }
 #endif
 
 static struct {
 	int env;
-	void (*fn)(struct terminal *term, unsigned char *, unsigned char *);
+	int (*open_window_fn)(struct terminal *term, unsigned char *, unsigned char *);
 	unsigned char *text;
 	unsigned char *hk;
 } oinw[] = {
@@ -2009,19 +2416,22 @@ struct open_in_new *get_open_in_new(int environment)
 		oin = mem_realloc(oin, (noin + 2) * sizeof(struct open_in_new));
 		oin[noin].text = oinw[i].text;
 		oin[noin].hk = oinw[i].hk;
-		oin[noin].fn = oinw[i].fn;
+		oin[noin].open_window_fn = oinw[i].open_window_fn;
 		noin++;
 		oin[noin].text = NULL;
 		oin[noin].hk = NULL;
-		oin[noin].fn = NULL;
+		oin[noin].open_window_fn = NULL;
 	}
 	if (oin == DUMMY) return NULL;
 	return oin;
 }
 
-int can_resize_window(int environment)
+int can_resize_window(struct terminal *term)
 {
-	if (environment & (ENV_OS2VIO | ENV_WIN32)) return 1;
+#if defined(OS2) || defined(WIN32)
+	if (!strncmp(cast_const_char term->term, "xterm", 5)) return 0;
+	if (term->environment & (ENV_OS2VIO | ENV_WIN32)) return 1;
+#endif
 	return 0;
 }
 
@@ -2031,7 +2441,7 @@ int can_open_os_shell(int environment)
 	if (environment & ENV_XWIN) return 0;
 #endif
 #ifdef WIN32
-	if (!(environment & ENV_WIN32)) return 0;
+	if (!F && !(environment & ENV_WIN32)) return 0;
 #endif
 #ifdef BEOS
 	if (!(environment & ENV_BE)) return 0;
@@ -2042,213 +2452,10 @@ int can_open_os_shell(int environment)
 	return 1;
 }
 
-#ifndef OS2
 void set_highpri(void)
 {
-}
-#else
-void set_highpri(void)
-{
+#ifdef OS2
 	DosSetPriority(PRTYS_PROCESS, PRTYC_FOREGROUNDSERVER, 0, 0);
-}
 #endif
-
-#ifndef HAVE_SNPRINTF
-
-#define B_SZ	65536
-
-static char snprtintf_buffer[B_SZ];
-
-int my_snprintf(char *str, int n, char *f, ...)
-{
-	int i;
-	va_list l;
-	if (!n) return -1;
-	va_start(l, f);
-	vsprintf(snprtintf_buffer, f, l);
-	va_end(l);
-	i = strlen(snprtintf_buffer);
-	if (i >= B_SZ) {
-		error("String size too large!");
-		fatal_tty_exit();
-		exit(RET_FATAL);
-	}
-	if (i >= n) {
-		memcpy(str, snprtintf_buffer, n);
-		str[n - 1] = 0;
-		return -1;
-	}
-	strcpy(str, snprtintf_buffer);
-	return i;
 }
 
-#endif
-
-#ifndef HAVE_RAISE
-int raise(int s)
-{
-#ifdef HAVE_GETPID
-	return kill(getpid(), s);
-#else
-	return 0;
-#endif
-};
-#endif
-#ifndef HAVE_GETTIMEOFDAY
-int gettimeofday(struct timeval *tv, struct timezone *tz)
-{
-	if (tv) tv->tv_sec = time(NULL), tv->tv_usec = 0;
-	if (tz) tz->tz_minuteswest = tz->tz_dsttime = 0;
-	return 0;
-}
-#endif
-#ifndef HAVE_TEMPNAM
-char *tempnam(const char *dir, const char *pfx)
-{
-	static int counter = 0;
-	unsigned char *d, *s, *a;
-	int l;
-	if (!(d = getenv("TMPDIR"))) {
-		if (dir) d = (unsigned char *)dir;
-		else if (!(d = getenv("TMP")) && !(d = getenv("TEMP"))) {
-#ifdef P_tmpdir
-			d = P_tmpdir;
-#else
-			d = "/tmp";
-#endif
-		}
-	}
-	l = 0;
-	s = init_str();
-	add_to_str(&s, &l, d);
-	if (s[0] && s[strlen(s) - 1] != '/') add_chr_to_str(&s, &l, '/');
-	add_to_str(&s, &l, (unsigned char *)pfx);
-	add_num_to_str(&s, &l, counter++);
-	a = strdup(s);
-	mem_free(s);
-	return a;
-}
-#endif
-#ifndef HAVE_STRTOUL
-unsigned long strtoul(const char *nptr, char **endptr, int base)
-{
-	if (*nptr == '-') {
-		if (endptr) *endptr = nptr;
-		return 0;
-	}
-	return (unsigned long)strtol(nptr,endptr,base);
-};
-#endif
-#ifndef HAVE_STRLEN
-size_t strlen(const char *s)
-{
-	size_t len = 0;
-	while (s[len]) len++;
-	return len;
-}
-#endif
-#ifndef HAVE_STRCPY
-char *strcpy(char *dst, const char *src)
-{
-	return memcpy(dst, src, strlen(src) + 1);
-}
-#endif
-#ifndef HAVE_STRCHR
-char *strchr(const char *s, int c)
-{
-	do {
-		if (*s == (char)c)
-			return (char *)s;
-	} while (*s++);
-	return NULL;
-}
-#endif
-#ifndef HAVE_STRRCHR
-char *strrchr(const char *s, int c)
-{
-	char *ret = NULL;
-	do {
-		if (*s == (char)c)
-			ret = (char *)s;
-	} while (*s++);
-	return ret;
-}
-#endif
-#ifndef HAVE_STRCMP
-int strcmp(const char *s1, const char *s2)
-{
-	while (1) {
-		if (*s1 != *s2) {
-			return (int)(unsigned char)*s1 - (int)(unsigned char)*s2;
-		}
-		if (!*s1) break;
-		s1++, s2++;
-	}
-	return 0;
-}
-#endif
-#ifndef HAVE_STRNCMP
-int strncmp(const char *s1, const char *s2, size_t n)
-{
-	while (n--) {
-		if (*s1 != *s2) {
-			return (int)(unsigned char)*s1 - (int)(unsigned char)*s2;
-		}
-		if (!*s1) break;
-		s1++, s2++;
-	}
-	return 0;
-}
-#endif
-#ifndef HAVE_STRCSPN
-size_t strcspn(const char *s, const char *reject)
-{
-	size_t r;
-	for (r = 0; *s; r++, s++) {
-		const char *rj;
-		for (rj = reject; *rj; rj++) if (*s == *rj) goto brk;
-	}
-	brk:
-	return r;
-}
-#endif
-#ifndef HAVE_STRSTR
-char *strstr(const char *haystack, const char *needle)
-{
-	size_t hs = strlen(haystack);
-	size_t ns = strlen(needle);
-	while (hs >= ns) {
-		if (!memcmp(haystack, needle, ns)) return (char *)haystack;
-		haystack++, hs--;
-	}
-	return NULL;
-}
-#endif
-#ifndef HAVE_MEMMOVE
-void *memmove(void *dst0, const void *src0, size_t length)
-{
-	unsigned char *dst = dst0;
-	const unsigned char *src = src0;
-
-	if ((const unsigned char *)dst == src || !length)
-		return dst0;
-
-	if ((const unsigned char *)dst <= src) {
-		while (length--) *dst++ = *src++;
-	} else {
-		dst += length - 1;
-		src += length - 1;
-		while (length--) *dst-- = *src--;
-	}
-	return dst0;
-}
-#endif
-#ifndef HAVE_STRERROR
-extern char *sys_errlist[];
-extern int sys_nerr;
-char *strerror(int errnum)
-{
-	if (errnum < 0 || errnum >= sys_nerr) return "Unknown error";
-	return sys_errlist[errnum];
-};
-#endif

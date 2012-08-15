@@ -47,29 +47,44 @@ static struct list_head timers = {&timers, &timers};
 ttime get_time(void)
 {
 	struct timeval tv;
-	gettimeofday(&tv, NULL);
-	return tv.tv_sec * 1000 + tv.tv_usec / 1000;
+	int rs;
+	EINTRLOOP(rs, gettimeofday(&tv, NULL));
+	return (uttime)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
 int can_write(int fd)
 {
 	fd_set fds;
 	struct timeval tv = {0, 0};
+	int rs;
 	FD_ZERO(&fds);
+	if (fd < 0)
+		internal("can_write: handle %d", fd);
+	if (fd >= (int)FD_SETSIZE) {
+		fatal_exit("too big handle %d", fd);
+	}
 	FD_SET(fd, &fds);
-	return select(fd + 1, NULL, &fds, NULL, &tv);
+	EINTRLOOP(rs, select(fd + 1, NULL, &fds, NULL, &tv));
+	return rs;
 }
 
 int can_read(int fd)
 {
 	fd_set fds;
 	struct timeval tv = {0, 0};
+	int rs;
 	FD_ZERO(&fds);
+	if (fd < 0)
+		internal("can_read: handle %d", fd);
+	if (fd >= (int)FD_SETSIZE) {
+		fatal_exit("too big handle %d", fd);
+	}
 	FD_SET(fd, &fds);
-	return select(fd + 1, &fds, NULL, NULL, &tv);
+	EINTRLOOP(rs, select(fd + 1, &fds, NULL, NULL, &tv));
+	return rs;
 }
 
-long select_info(int type)
+unsigned long select_info(int type)
 {
 	int i = 0, j;
 	struct cache_entry *ce;
@@ -82,7 +97,7 @@ long select_info(int type)
 			foreach(ce, timers) i++;
 			return i;
 		default:
-			internal("cache_info: bad request");
+			internal("select_info_info: bad request");
 	}
 	return 0;
 }
@@ -146,9 +161,9 @@ static ttime last_time;
 
 static void check_timers(void)
 {
-	ttime interval = get_time() - last_time;
+	ttime interval = (uttime)get_time() - (uttime)last_time;
 	struct timer * volatile t;	/* volatile because of setjmp */
-	foreach(t, timers) t->interval -= interval;
+	foreach(t, timers) t->interval -= (uttime)interval;
 	/*ch:*/
 	foreach(t, timers) if (t->interval <= 0) {
 		struct timer *tt;
@@ -168,7 +183,7 @@ static void check_timers(void)
 		mem_free(t);
 		t = tt;
 	} else break;
-	last_time += interval;
+	last_time += (uttime)interval;
 }
 
 int install_timer(ttime t, void (*func)(void *), void *data)
@@ -208,15 +223,13 @@ void *get_handler(int fd, int tp)
 	if (fd < 0)
 		internal("get_handler: handle %d", fd);
 	if (fd >= (int)FD_SETSIZE) {
-		error("too big handle %d");
-		fatal_tty_exit();
-		exit(RET_FATAL);
+		fatal_exit("too big handle %d", fd);
 		return NULL;
 	}
 	switch (tp) {
-		case H_READ:	return threads[fd].read_func;
-		case H_WRITE:	return threads[fd].write_func;
-		case H_ERROR:	return threads[fd].error_func;
+		case H_READ:	return (void *)threads[fd].read_func;
+		case H_WRITE:	return (void *)threads[fd].write_func;
+		case H_ERROR:	return (void *)threads[fd].error_func;
 		case H_DATA:	return threads[fd].data;
 	}
 	internal("get_handler: bad type %d", tp);
@@ -228,9 +241,7 @@ void set_handlers(int fd, void (*read_func)(void *), void (*write_func)(void *),
 	if (fd < 0)
 		internal("set_handlers: handle %d", fd);
 	if (fd >= (int)FD_SETSIZE) {
-		error("too big handle %d");
-		fatal_tty_exit();
-		exit(RET_FATAL);
+		fatal_exit("too big handle %d", fd);
 		return;
 	}
 	threads[fd].read_func = read_func;
@@ -282,8 +293,12 @@ static int signal_pipe[2];
 
 static void signal_break(void *data)
 {
-	char c;
-	while (can_read(signal_pipe[0])) read(signal_pipe[0], &c, 1);
+	unsigned char c;
+	while (can_read(signal_pipe[0])) {
+		int rd;
+		EINTRLOOP(rd, read(signal_pipe[0], &c, 1));
+		if (rd != 1) break;
+	}
 }
 
 SIGNAL_HANDLER static void got_signal(int sig)
@@ -301,7 +316,10 @@ SIGNAL_HANDLER static void got_signal(int sig)
 	}
 	signal_mask[sig] = 1;
 	ret:
-	if (can_write(signal_pipe[1])) write(signal_pipe[1], "x", 1);
+	if (can_write(signal_pipe[1])) {
+		int wr;
+		EINTRLOOP(wr, write(signal_pipe[1], "x", 1));
+	}
 	errno = sv_errno;
 }
 
@@ -309,42 +327,65 @@ static struct sigaction sa_zero;
 
 void install_signal_handler(int sig, void (*fn)(void *), void *data, int critical)
 {
+	int rs;
 	struct sigaction sa = sa_zero;
 	if (sig >= NUM_SIGNALS || sig < 0) {
 		internal("bad signal number: %d", sig);
 		return;
 	}
 	if (!fn) sa.sa_handler = SIG_IGN;
-	else sa.sa_handler = (void *)got_signal;
-#ifdef HAVE_SIGFILLSET
+	else sa.sa_handler = (void (*)(int))got_signal;
 	sigfillset(&sa.sa_mask);
-#else
-	memset(&sa.sa_mask, -1, sizeof sa.sa_mask);
-#endif
 	sa.sa_flags = SA_RESTART;
-	if (!fn) sigaction(sig, &sa, NULL);
+	if (!fn)
+		EINTRLOOP(rs, sigaction(sig, &sa, NULL));
 	signal_handlers[sig].fn = fn;
 	signal_handlers[sig].data = data;
 	signal_handlers[sig].critical = critical;
-	if (fn) sigaction(sig, &sa, NULL);
+	if (fn)
+		EINTRLOOP(rs, sigaction(sig, &sa, NULL));
 }
 
 void interruptible_signal(int sig, int in)
 {
 	struct sigaction sa = sa_zero;
+	int rs;
 	if (sig >= NUM_SIGNALS || sig < 0) {
 		internal("bad signal number: %d", sig);
 		return;
 	}
 	if (!signal_handlers[sig].fn) return;
-	sa.sa_handler = (void *)got_signal;
-#ifdef HAVE_SIGFILLSET
+	sa.sa_handler = (void (*)(int))got_signal;
 	sigfillset(&sa.sa_mask);
-#else
-	memset(&sa.sa_mask, -1, sizeof sa.sa_mask);
-#endif
 	if (!in) sa.sa_flags = SA_RESTART;
-	sigaction(sig, &sa, NULL);
+	EINTRLOOP(rs, sigaction(sig, &sa, NULL));
+}
+
+static sigset_t sig_old_mask;
+static int sig_unblock = 0;
+
+void block_signals(int except1, int except2)
+{
+	int rs;
+	sigset_t mask;
+	sigfillset(&mask);
+#ifdef HAVE_SIGDELSET
+	if (except1) sigdelset(&mask, except1);
+	if (except2) sigdelset(&mask, except2);
+#else
+	if (except1 || except2) return;
+#endif
+	EINTRLOOP(rs, sigprocmask(SIG_BLOCK, &mask, &sig_old_mask));
+	if (!rs) sig_unblock = 1;
+}
+
+void unblock_signals(void)
+{
+	int rs;
+	if (sig_unblock) {
+		EINTRLOOP(rs, sigprocmask(SIG_SETMASK, &sig_old_mask, NULL));
+		sig_unblock = 0;
+	}
 }
 
 static int check_signals(void)
@@ -370,11 +411,13 @@ static int check_signals(void)
 
 static void sigchld(void *p)
 {
+	pid_t pid;
 #ifndef WNOHANG
-	wait(NULL);
+	EINTRLOOP(pid, wait(NULL));
 #else
-	while (waitpid(-1, NULL, WNOHANG) > 0)
-		;
+	do {
+		EINTRLOOP(pid, waitpid(-1, NULL, WNOHANG));
+	} while (pid > 0);
 #endif
 }
 
@@ -384,17 +427,23 @@ void set_sigcld(void)
 }
 
 int terminate_loop = 0;
+
 //focus
 void kbd_remoteControl();
 void rc_mouse_event();
+#include "rcinput.h"
+
 void select_loop(void (*init)(void))
 {
 //focus
-        int rcfd=-1;
-        int mousefd=-1;
+	int rcfd=-1;
+	int mousefd=-1;
 //
 	struct stat st;
-	//if (stat(".", &st) && getenv("HOME")) chdir(getenv("HOME"));
+	int rs;
+	EINTRLOOP(rs, stat(".", &st));
+// 	if (rs && getenv("HOME"))
+// 		EINTRLOOP(rs, chdir(getenv("HOME")));
 	memset(&sa_zero, 0, sizeof sa_zero);
 	memset(signal_mask, 0, sizeof signal_mask);
 	memset(signal_handlers, 0, sizeof signal_handlers);
@@ -405,12 +454,10 @@ void select_loop(void (*init)(void))
 	last_time = get_time();
 	ignore_signals();
 	if (c_pipe(signal_pipe)) {
-		error("ERROR: can't create pipe for signal handling");
-		retval = RET_FATAL;
-		return;
+		fatal_exit("ERROR: can't create pipe for signal handling");
 	}
-	fcntl(signal_pipe[0], F_SETFL, O_NONBLOCK);
-	fcntl(signal_pipe[1], F_SETFL, O_NONBLOCK);
+	EINTRLOOP(rs, fcntl(signal_pipe[0], F_SETFL, O_NONBLOCK));
+	EINTRLOOP(rs, fcntl(signal_pipe[1], F_SETFL, O_NONBLOCK));
 	set_handlers(signal_pipe[0], signal_break, NULL, NULL, NULL);
 	init();
 	CHK_BH;
@@ -432,8 +479,6 @@ printf("rcfd: %d\n", rcfd);
 		check_signals();
 		check_timers();
 		check_timers();
-		check_timers();
-		check_timers();
 		if (!F) redraw_all_terminals();
 #ifdef OS_BAD_SIGNALS
 	/* Cygwin has buggy signals that sometimes don't interrupt select.
@@ -443,13 +488,13 @@ printf("rcfd: %d\n", rcfd);
 		tm = &tv;
 #endif
 		if (!list_empty(timers)) {
-			ttime tt = ((struct timer *)timers.next)->interval + 1;
+			ttime tt = (uttime)((struct timer *)timers.next)->interval + 1;
 			if (tt < 0) tt = 0;
 #ifdef OS_BAD_SIGNALS
 			if (tt < 1000)
 #endif
 			{
-				tv.tv_sec = tt / 1000;
+				tv.tv_sec = tt / 1000 < MAXINT ? (int)(tt / 1000) : MAXINT;
 				tv.tv_usec = (tt % 1000) * 1000;
 				tm = &tv;
 			}
@@ -484,9 +529,7 @@ printf("rcfd: %d\n", rcfd);
 			fprintf(stderr, "select intr\n");
 #endif
 			if (errno != EINTR) {
-				error("ERROR: select failed: %s", strerror(errno));
-				fatal_tty_exit();
-				exit(RET_FATAL);
+				fatal_exit("ERROR: select failed: %s", strerror(errno));
 			}
 			continue;
 		}

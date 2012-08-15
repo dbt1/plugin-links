@@ -43,7 +43,7 @@
 
 #if defined(UNIX)
 
-static inline int dir_sep(char x) { return x == '/'; }
+static inline int dir_sep(unsigned char x) { return x == '/'; }
 #define NEWLINE "\n"
 #define FS_UNIX_RIGHTS
 #define FS_UNIX_HARDLINKS
@@ -64,7 +64,7 @@ static inline int dir_sep(char x) { return x == '/'; }
 
 #elif defined(OS2)
 
-static inline int dir_sep(char x) { return x == '/' || x == '\\'; }
+static inline int dir_sep(unsigned char x) { return x == '/' || x == '\\'; }
 #define NEWLINE "\r\n"
 /*#define NO_ASYNC_LOOKUP*/
 #define SYSTEM_ID SYS_OS2
@@ -81,7 +81,7 @@ static inline int dir_sep(char x) { return x == '/' || x == '\\'; }
 
 #elif defined(WIN32)
 
-static inline int dir_sep(char x) { return x == '/' || x == '\\'; }
+static inline int dir_sep(unsigned char x) { return x == '/' || x == '\\'; }
 #define NEWLINE "\r\n"
 /*#define NO_ASYNC_LOOKUP*/
 #define SYSTEM_ID SYS_WIN_32
@@ -93,14 +93,24 @@ static inline int dir_sep(char x) { return x == '/' || x == '\\'; }
 #define DOS_FS
 #define SET_WINDOW_TITLE_UTF_8
 #define ASSOC_CONS_XWIN
+#ifdef _UWIN
+#define DISABLE_SMB
+#endif
+#ifdef __CYGWIN__
 #define OS_BAD_SIGNALS
+#endif
 #ifndef HAVE_PTHREADS
-  #define HAVE_PTHREADS
+#define HAVE_PTHREADS
+#endif
+#if defined(HAVE_SYS_UN_H) && !defined(_UWIN)
+#define USE_AF_UNIX
+#else
+#define DONT_USE_AF_UNIX
 #endif
 
 #elif defined(INTERIX)
 
-static inline int dir_sep(char x) { return x == '/'; }
+static inline int dir_sep(unsigned char x) { return x == '/'; }
 #define NEWLINE "\n"
 #define FS_UNIX_RIGHTS
 #define FS_UNIX_HARDLINKS
@@ -121,7 +131,7 @@ static inline int dir_sep(char x) { return x == '/'; }
 
 #elif defined(BEOS)
 
-static inline int dir_sep(char x) { return x == '/'; }
+static inline int dir_sep(unsigned char x) { return x == '/'; }
 #define NEWLINE "\n"
 #define NO_ASYNC_LOOKUP /* async lookup works on BeOS but crashes the Haiku kernel */
 #define FS_UNIX_RIGHTS
@@ -147,7 +157,7 @@ static inline int dir_sep(char x) { return x == '/'; }
 
 #elif defined(RISCOS)
 
-static inline int dir_sep(char x) { return x == '/' || x == '\\'; }
+static inline int dir_sep(unsigned char x) { return x == '/' || x == '\\'; }
 #define NEWLINE "\n"
 #define SYSTEM_ID SYS_RISCOS
 #define SYSTEM_NAME "RISC OS"
@@ -160,7 +170,7 @@ static inline int dir_sep(char x) { return x == '/' || x == '\\'; }
 
 #elif defined(ATHEOS)
 
-static inline int dir_sep(char x) { return x == '/'; }
+static inline int dir_sep(unsigned char x) { return x == '/'; }
 #define NEWLINE "\n"
 #define FS_UNIX_RIGHTS
 #define FS_UNIX_HARDLINKS
@@ -175,7 +185,7 @@ static inline int dir_sep(char x) { return x == '/'; }
 
 #elif defined(SPAD)
 
-static inline int dir_sep(char x) { return x == '/'; }
+static inline int dir_sep(unsigned char x) { return x == '/'; }
 #define NEWLINE "\n"
 #define SYSTEM_ID SYS_SPAD
 #define SYSTEM_NAME "Spad"
@@ -200,7 +210,4 @@ static inline int dir_sep(char x) { return x == '/'; }
 #endif
 #endif
 
-#if !defined(HAVE_BEGINTHREAD) && !defined(BEOS) && !defined(ATHEOS) && !defined(HAVE_PTHREADS) && !(defined(HAVE_ATHEOS_THREADS_H) && defined(HAVE_SPAWN_THREAD) && defined(HAVE_RESUME_THREAD))
-#define THREAD_SAFE_LOOKUP
-#endif
 #endif /* #ifndef OS_DEP_H */

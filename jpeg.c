@@ -87,7 +87,6 @@ g19_2000:
 	if (setjmp(global_jerr->setjmp_buffer)){
 		jpeg_destroy_decompress(global_cinfo);
 		goto g19_2000;
-		return;
 	}
 	jpeg_stdio_src(global_cinfo,stdin);
 	global_cinfo->src->init_source=&nop;
@@ -221,7 +220,7 @@ void jpeg_restart(struct cached_image *cimg, unsigned char *data, int length)
 
 	/* Update the next input byte pointer for the decoder to continue at
 	 * the right position */
-	global_cinfo->src->next_input_byte=deco->jdata;
+	global_cinfo->src->next_input_byte=(void *)deco->jdata;
 
 	/* ...:::...:..:.:::.:.::::.::.:.:.:.::..::::.::::.:...: */
 	/* Update the length of data in the decoder buffer */
@@ -376,6 +375,22 @@ decoder_ended:
 		img_end(cimg);
 	}
 }
+
+void add_jpeg_version(unsigned char **s, int *l)
+{
+	add_to_str(s, l, cast_uchar "JPEG (");
+#if defined(JPEG_LIB_VERSION_MAJOR) && defined(JPEG_LIB_VERSION_MINOR)
+	add_num_to_str(s, l, JPEG_LIB_VERSION_MAJOR);
+	add_to_str(s, l, cast_uchar ".");
+	add_num_to_str(s, l, JPEG_LIB_VERSION_MINOR);
+#else
+	add_num_to_str(s, l, JPEG_LIB_VERSION / 10);
+	add_to_str(s, l, cast_uchar ".");
+	add_num_to_str(s, l, JPEG_LIB_VERSION % 10);
+#endif
+	add_to_str(s, l, cast_uchar ")");
+}
+
 #endif /* #ifdef HAVE_JPEG */
 
 #endif /* #ifdef G */

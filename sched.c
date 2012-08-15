@@ -10,6 +10,8 @@ static tcount connection_count = 0;
 
 static int active_connections = 0;
 
+tcount netcfg_stamp = 0;
+
 struct list_head queue = {&queue, &queue};
 
 struct h_conn {
@@ -27,7 +29,7 @@ struct list_head keepalive_connections = {&keepalive_connections, &keepalive_con
 static void send_connection_info(struct connection *c);
 static void check_keepalive_connections(void);
 
-long connect_info(int type)
+unsigned long connect_info(int type)
 {
 	int i = 0;
 	struct connection *ce;
@@ -43,12 +45,13 @@ long connect_info(int type)
 			foreach(ce, queue) i += ce->state == S_TRANS;
 			return i;
 		case CI_KEEP:
+			check_keepalive_connections();
 			foreach(cee, keepalive_connections) i++;
 			return i;
 		case CI_LIST:
 			return (long) &queue;
 		default:
-			internal("cache_info: bad request");
+			internal("connect_info: bad request");
 	}
 	return 0;
 }
@@ -65,7 +68,7 @@ static struct h_conn *is_host_on_list(struct connection *c)
 	unsigned char *ho;
 	struct h_conn *h;
 	if (!(ho = get_host_name(c->url))) return NULL;
-	foreach(h, h_conns) if (!strcmp(h->host, ho)) {
+	foreach(h, h_conns) if (!strcmp(cast_const_char h->host, cast_const_char ho)) {
 		mem_free(ho);
 		return h;
 	}
@@ -78,25 +81,25 @@ static int st_r = 0;
 static void stat_timer(struct connection *c)
 {
 	struct remaining_info *r = &c->prg;
-	ttime a = get_time() - r->last_time;
+	ttime a = (uttime)get_time() - (uttime)r->last_time;
 	if (getpri(c) == PRI_CANCEL && (c->est_length > (longlong)memory_cache_size * MAX_CACHED_OBJECT || c->from > (longlong)memory_cache_size * MAX_CACHED_OBJECT)) register_bottom_half(check_queue, NULL);
 	if (c->state > S_WAIT) {
 		r->loaded = c->received;
 		if ((r->size = c->est_length) < (r->pos = c->from) && r->size != -1)
 			r->size = c->from;
-		r->dis_b += a;
+		r->dis_b += (uttime)a;
 		while (r->dis_b >= SPD_DISP_TIME * CURRENT_SPD_SEC) {
 			r->cur_loaded -= r->data_in_secs[0];
-			memmove(r->data_in_secs, r->data_in_secs + 1, sizeof(int) * (CURRENT_SPD_SEC - 1));
+			memmove(r->data_in_secs, r->data_in_secs + 1, sizeof(off_t) * (CURRENT_SPD_SEC - 1));
 			r->data_in_secs[CURRENT_SPD_SEC - 1] = 0;
-			r->dis_b -= SPD_DISP_TIME;
+			r->dis_b -= (uttime)SPD_DISP_TIME;
 		}
 		r->data_in_secs[CURRENT_SPD_SEC - 1] += r->loaded - r->last_loaded;
-		r->cur_loaded += r->loaded - r->last_loaded;
-		r->last_loaded = r->loaded;
-		r->elapsed += a;
+		r->cur_loaded += (uttime)r->loaded - (uttime)r->last_loaded;
+		r->last_loaded = (uttime)r->loaded;
+		r->elapsed += (uttime)a;
 	}
-	r->last_time += a;
+	r->last_time += (uttime)a;
 	r->timer = install_timer(SPD_DISP_TIME, (void (*)(void *))stat_timer, c);
 	if (!st_r) send_connection_info(c);
 }
@@ -141,7 +144,7 @@ static struct k_conn *is_host_on_keepalive_list(struct connection *c)
 	if (!(ph = get_protocol_handle(c->url))) return NULL;
 	if (!(ho = get_host_and_pass(c->url))) return NULL;
 	foreach(h, keepalive_connections)
-		if (h->protocol == ph && h->port == po && !strcmp(h->host, ho)) {
+		if (h->protocol == ph && h->port == po && !strcmp(cast_const_char h->host, cast_const_char ho)) {
 			mem_free(ho);
 			return h;
 		}
@@ -153,19 +156,25 @@ int get_keepalive_socket(struct connection *c)
 {
 	struct k_conn *k;
 	int cc;
+	if (c->tries > 0 || c->unrestartable) return -1;
 	if (!(k = is_host_on_keepalive_list(c))) return -1;
 	cc = k->conn;
 	del_from_list(k);
 	mem_free(k->host);
 	mem_free(k);
 	c->sock1 = cc;
+	if (max_tries == 1) c->tries = -1;
 	return 0;
 }
 
 void abort_all_keepalive_connections(void)
 {
 	struct k_conn *k;
-	foreach(k, keepalive_connections) mem_free(k->host), close(k->conn);
+	int rs;
+	foreach(k, keepalive_connections) {
+		mem_free(k->host);
+		EINTRLOOP(rs, close(k->conn));
+	}
 	free_list(keepalive_connections);
 	check_keepalive_connections();
 }
@@ -173,13 +182,14 @@ void abort_all_keepalive_connections(void)
 static void free_connection_data(struct connection *c)
 {
 	struct h_conn *h;
+	int rs;
 	if (c->sock1 != -1) set_handlers(c->sock1, NULL, NULL, NULL, NULL);
 	if (c->sock2 != -1) set_handlers(c->sock2, NULL, NULL, NULL, NULL);
 	close_socket(&c->sock2);
 	if (c->pid) {
-		kill(c->pid, SIGINT);
-		kill(c->pid, SIGTERM);
-		kill(c->pid, SIGKILL);
+		EINTRLOOP(rs, kill(c->pid, SIGINT));
+		EINTRLOOP(rs, kill(c->pid, SIGTERM));
+		EINTRLOOP(rs, kill(c->pid, SIGKILL));
 		c->pid = 0;
 	}
 	if (!c->running) {
@@ -230,10 +240,18 @@ static void send_connection_info(struct connection *c)
 
 static void del_connection(struct connection *c)
 {
-	if (c->cache) c->cache->refcount++;
+	struct cache_entry *ce = c->cache;
+	if (ce) ce->refcount++;
 	del_from_list(c);
 	send_connection_info(c);
-	if (c->cache) c->cache->refcount--;
+	if (ce) ce->refcount--;
+	if (c->detached) {
+		if (ce && !ce->url[0] && !is_entry_used(ce) && !ce->refcount)
+			delete_cache_entry(ce);
+	} else {
+		if (ce)
+			trim_cache_entry(ce);
+	}
 	mem_free(c->url);
 	if (c->prev_url) mem_free(c->prev_url);
 	mem_free(c);
@@ -246,16 +264,20 @@ static void check_queue_bugs(void);
 void add_keepalive_socket(struct connection *c, ttime timeout)
 {
 	struct k_conn *k;
+	int rs;
 	free_connection_data(c);
 	if (c->sock1 == -1) {
 		internal("keepalive connection not connected");
 		goto del;
 	}
 	k = mem_alloc(sizeof(struct k_conn));
-	if ((k->port = get_port(c->url)) == -1 || !(k->protocol = get_protocol_handle(c->url)) || !(k->host = get_host_and_pass(c->url))) {
+	if (c->netcfg_stamp != netcfg_stamp ||
+	    (k->port = get_port(c->url)) == -1 ||
+	    !(k->protocol = get_protocol_handle(c->url)) ||
+	    !(k->host = get_host_and_pass(c->url))) {
 		mem_free(k);
 		del_connection(c);
-		goto close;
+		goto clos;
 	}
 	k->conn = c->sock1;
 	k->timeout = timeout;
@@ -268,8 +290,8 @@ void add_keepalive_socket(struct connection *c, ttime timeout)
 #endif
 	register_bottom_half(check_queue, NULL);
 	return;
-	close:
-	close(c->sock1);
+	clos:
+	EINTRLOOP(rs, close(c->sock1));
 #ifdef DEBUG
 	check_queue_bugs();
 #endif
@@ -278,8 +300,9 @@ void add_keepalive_socket(struct connection *c, ttime timeout)
 
 static void del_keepalive_socket(struct k_conn *kc)
 {
+	int rs;
 	del_from_list(kc);
-	close(kc->conn);
+	EINTRLOOP(rs, close(kc->conn));
 	mem_free(kc->host);
 	mem_free(kc);
 }
@@ -298,7 +321,7 @@ static void check_keepalive_connections(void)
 	ttime ct = get_time();
 	int p = 0;
 	if (keepalive_timeout != -1) kill_timer(keepalive_timeout), keepalive_timeout = -1;
-	foreach(kc, keepalive_connections) if (can_read(kc->conn) || ct - kc->add_time > kc->timeout) {
+	foreach(kc, keepalive_connections) if (can_read(kc->conn) || (uttime)ct - (uttime)kc->add_time > (uttime)kc->timeout) {
 		kc = kc->prev;
 		del_keepalive_socket(kc->next);
 	} else p++;
@@ -337,12 +360,13 @@ static void sort_queue(void)
 static void interrupt_connection(struct connection *c)
 {
 #ifdef HAVE_SSL
-	if (c->ssl == (void *)-1) c->ssl = 0;
-	if(c->ssl) {
+	if (c->ssl == (void *)-1) c->ssl = NULL;
+	if (c->ssl) {
 		SSL_free(c->ssl);
-		c->ssl=NULL;
+		c->ssl = NULL;
 	}
 #endif
+	if (c->sock1 != -1) set_handlers(c->sock1, NULL, NULL, NULL, NULL);
 	close_socket(&c->sock1);
 	free_connection_data(c);
 }
@@ -364,7 +388,7 @@ static int try_to_suspend_connection(struct connection *c, unsigned char *ho)
 		if (ho) {
 			unsigned char *h;
 			if (!(h = get_host_name(d->url))) continue;
-			if (strcmp(h, ho)) {
+			if (strcmp(cast_const_char h, cast_const_char ho)) {
 				mem_free(h);
 				continue;
 			}
@@ -385,32 +409,26 @@ static void run_connection(struct connection *c)
 		return;
 	}
 
-	if (is_url_blocked(c->url)) {
-		setcstate(c, S_BLOCKED_URL);
-		del_connection(c);
-		return;
-	}
-
 	safe_strncpy(c->socks_proxy, proxies.socks_proxy, sizeof c->socks_proxy);
 
-	if (proxies.only_proxies && casecmp(c->url, "proxy://", 8) && (!*c->socks_proxy || url_bypasses_socks(c->url))) {
+	if (proxies.only_proxies && casecmp(c->url, cast_uchar "proxy://", 8) && (!*c->socks_proxy || url_bypasses_socks(c->url))) {
 		setcstate(c, S_NO_PROXY);
 		del_connection(c);
 		return;
 	}
 	
 	if (!(func = get_protocol_handle(c->url))) {
-		setcstate(c, S_BAD_URL);
+		s_bad_url:
+		if (!casecmp(c->url, cast_uchar "proxy://", 8)) setcstate(c, S_BAD_PROXY);
+		else setcstate(c, S_BAD_URL);
 		del_connection(c);
 		return;
 	}
 	if (!(hc = is_host_on_list(c))) {
 		hc = mem_alloc(sizeof(struct h_conn));
 		if (!(hc->host = get_host_name(c->url))) {
-			setcstate(c, S_BAD_URL);
-			del_connection(c);
 			mem_free(hc);
-			return;
+			goto s_bad_url;
 		}
 		hc->conn = 0;
 		add_to_list(h_conns, hc);
@@ -419,6 +437,31 @@ static void run_connection(struct connection *c)
 	active_connections++;
 	c->running = 1;
 	func(c);
+}
+
+static int is_connection_seekable(struct connection *c)
+{
+	unsigned char *protocol = get_protocol_name(c->url);
+	if (!strcasecmp(cast_const_char protocol, "http") ||
+	    !strcasecmp(cast_const_char protocol, "https") ||
+	    !strcasecmp(cast_const_char protocol, "proxy")) {
+		unsigned char *d;
+		mem_free(protocol);
+		if (!c->cache || !c->cache->head)
+			return 1;
+		d = parse_http_header(c->cache->head, cast_uchar "Accept-Ranges", NULL);
+		if (d) {
+			mem_free(d);
+			return 1;
+		}
+		return 0;
+	}
+	if (!strcasecmp(cast_const_char protocol, "ftp")) {
+		mem_free(protocol);
+		return 1;
+	}
+	mem_free(protocol);
+	return 0;
 }
 
 int is_connection_restartable(struct connection *c)
@@ -489,14 +532,16 @@ static void check_queue_bugs(void)
 	foreach(d, queue) {
 		int q = getpri(d);
 		cc += d->running;
-		if (q < p) if (!ps) {
-			internal("queue is not sorted");
-			sort_queue();
-			ps = 1;
-			goto again;
-		} else {
-			internal("queue is not sorted even after sort_queue!");
-			break;
+		if (q < p) {
+			if (!ps) {
+				internal("queue is not sorted");
+				sort_queue();
+				ps = 1;
+				goto again;
+			} else {
+				internal("queue is not sorted even after sort_queue!");
+				break;
+			}
 		} else p = q;
 		if (d->state < 0) {
 			internal("interrupted connection on queue (conn %s, state %d)", d->url, d->state);
@@ -555,28 +600,43 @@ void check_queue(void *dummy)
 #endif
 }
 
+unsigned char *get_proxy_string(unsigned char *url)
+{
+	if (*proxies.http_proxy && !casecmp(url, cast_uchar "http://", 7)) return proxies.http_proxy;
+	if (*proxies.ftp_proxy && !casecmp(url, cast_uchar "ftp://", 6)) return proxies.ftp_proxy;
+#ifdef HAVE_SSL
+	if (*proxies.https_proxy && !casecmp(url, cast_uchar "https://", 8)) return proxies.https_proxy;
+#endif
+	return NULL;
+}
+
 unsigned char *get_proxy(unsigned char *url)
 {
-	size_t l = strlen(url);
-	unsigned char *proxy = NULL;
+	size_t l = strlen(cast_const_char url);
+	unsigned char *proxy = get_proxy_string(url);
 	unsigned char *u;
-	if (*proxies.http_proxy && l >= 7 && !casecmp(url, "http://", 7)) proxy = proxies.http_proxy;
-	if (*proxies.ftp_proxy && l >= 6 && !casecmp(url, "ftp://", 6)) proxy = proxies.ftp_proxy;
-	u = mem_alloc(l + 1 + (proxy ? strlen(proxy) + 9 : 0));
-	if (proxy) strcpy(u, "proxy://"), strcat(u, proxy), strcat(u, "/");
+	u = mem_alloc(l + 1 + (proxy ? strlen(cast_const_char proxy) + 9 : 0));
+	if (proxy) strcpy(cast_char u, "proxy://"), strcat(cast_char u, cast_const_char proxy), strcat(cast_char u, "/");
 	else *u = 0;
-	strcat(u, url);
+	strcat(cast_char u, cast_const_char url);
 	return u;
 }
 
 /* prev_url is a pointer to previous url or NULL */
 /* prev_url will NOT be deallocated */
-void load_url(unsigned char *url, unsigned char * prev_url, struct status *stat, int pri, int no_cache)
+void load_url(unsigned char *url, unsigned char *prev_url, struct status *stat, int pri, int no_cache, int no_compress, off_t position)
 {
 	struct cache_entry *e = NULL;
 	struct connection *c;
 	unsigned char *u;
-	if (stat) stat->c = NULL, stat->ce = NULL, stat->pri = pri;
+	int must_detach = 0;
+	if (stat) {
+		stat->c = NULL;
+		stat->ce = NULL;
+		stat->state = S_OUT_OF_MEM;
+		stat->prev_error = 0;
+		stat->pri = pri;
+	}
 #ifdef DEBUG
 	foreach(c, queue) {
 		struct status *st;
@@ -590,7 +650,13 @@ void load_url(unsigned char *url, unsigned char * prev_url, struct status *stat,
 		}
 	}
 #endif
-	if (stat) stat->state = S_OUT_OF_MEM, stat->prev_error = 0;
+	if (is_url_blocked(url)) {
+		if (stat) {
+			stat->state = S_BLOCKED_URL;
+			if (stat->end) stat->end(stat, stat->data);
+		}
+		return;
+	}
 	if (no_cache <= NC_CACHE && !find_in_cache(url, &e)) {
 		if (e->incomplete) {
 			e->refcount--;
@@ -603,16 +669,26 @@ void load_url(unsigned char *url, unsigned char * prev_url, struct status *stat,
 				goto skip_cache;
 			}
 		}
+		if (no_compress) {
+			unsigned char *enc;
+			enc = parse_http_header(e->head, cast_uchar "Content-Encoding", NULL);
+			if (enc) {
+				mem_free(enc);
+				e->refcount--;
+				must_detach = 1;
+				goto skip_cache;
+			}
+		}
 		if (stat) {
 			stat->ce = e;
-			stat->state = S_OK;
+			stat->state = S__OK;
 			if (stat->end) stat->end(stat, stat->data);
 		}
 		e->refcount--;
 		return;
 	}
 	skip_cache:
-	if (!casecmp(url, "proxy://", 8)) {
+	if (!casecmp(url, cast_uchar "proxy://", 8)) {
 		if (stat) {
 			stat->state = S_BAD_URL;
 			if (stat->end) stat->end(stat, stat->data);
@@ -620,7 +696,21 @@ void load_url(unsigned char *url, unsigned char * prev_url, struct status *stat,
 		return;
 	}
 	u = get_proxy(url);
-	foreach(c, queue) if (!c->detached && !strcmp(c->url, u)) {
+	foreach(c, queue) if (!c->detached && !strcmp(cast_const_char c->url, cast_const_char u)) {
+		if (c->from < position) continue;
+		if (no_compress && !c->no_compress) {
+			unsigned char *enc;
+			if ((c->state >= S_WAIT && c->state < S_TRANS) || !c->cache) {
+				must_detach = 1;
+				break;
+			}
+			enc = parse_http_header(c->cache->head, cast_uchar "Content-Encoding", NULL);
+			if (enc) {
+				mem_free(enc);
+				must_detach = 1;
+				break;
+			}
+		}
 		mem_free(u);
 		if (getpri(c) > pri) {
 			del_from_list(c);
@@ -646,22 +736,56 @@ void load_url(unsigned char *url, unsigned char * prev_url, struct status *stat,
 	c->prev_url = stracpy(prev_url);
 	c->running = 0;
 	c->prev_error = 0;
-	c->from = no_cache >= NC_IF_MOD || !e || e->frag.next == &e->frag || ((struct fragment *)e->frag.next)->offset ? 0 : ((struct fragment *)e->frag.next)->length;
+	if (position || must_detach) {
+		c->from = position;
+	} else if (no_cache >= NC_IF_MOD || !e) {
+		c->from = 0;
+	} else {
+		struct fragment *frag;
+		c->from = 0;
+		foreach(frag, e->frag) {
+			if (frag->offset != c->from)
+				break;
+			c->from += frag->length;
+		}
+		
+	}
 	memset(c->pri, 0, sizeof c->pri);
 	c->pri[pri] = 1;
 	c->no_cache = no_cache;
 	c->sock1 = c->sock2 = -1;
 	c->dnsquery = NULL;
+	c->tries = 0;
+	c->netcfg_stamp = netcfg_stamp;
+	init_list(c->statuss);
 	c->info = NULL;
 	c->buffer = NULL;
 	c->newconn = NULL;
 	c->cache = NULL;
-	c->tries = 0;
-	init_list(c->statuss);
 	c->est_length = -1;
 	c->unrestartable = 0;
+#ifdef HAVE_ANY_COMPRESSION
+	c->no_compress = http_options.no_compression || no_compress;
+#else
+	c->no_compress = 1;
+#endif
 	c->prg.timer = -1;
 	c->timer = -1;
+	if (position || must_detach) {
+		if (new_cache_entry(c->url, &c->cache)) {
+			mem_free(c->url);
+			if (c->prev_url) mem_free(c->prev_url);
+			mem_free(c);
+			if (stat) {
+				stat->state = S_OUT_OF_MEM;
+				if (stat->end) stat->end(stat, stat->data);
+			}
+			return;
+		}
+		c->cache->refcount--;
+		detach_cache_entry(c->cache);
+		c->detached = 2;
+	}
 	if (stat) {
 		stat->prg = &c->prg;
 		stat->c = c;
@@ -735,20 +859,28 @@ void detach_connection(struct status *stat, off_t pos)
 	off_t l;
 	if (stat->state < 0) return;
 	c = stat->c;
-	if (c->detached) goto detach_done;
 	if (!c->cache) return;
+	if (c->detached) goto detach_done;
 	if (c->est_length == -1) l = c->from;
 	else l = c->est_length;
-	if (l < (longlong)memory_cache_size * MAX_CACHED_OBJECT) return;
+	if (l < (longlong)memory_cache_size * MAX_CACHED_OBJECT && !(pos > c->from && is_connection_seekable(c))) return;
 	l = 0;
 	for (i = 0; i < PRI_CANCEL; i++) l += c->pri[i];
 	if (!l) internal("detaching free connection");
 	if (l != 1 || c->cache->refcount) return;
-	shrink_memory(SH_CHECK_QUOTA);
-	c->cache->url[0] = 0;
+	shrink_memory(SH_CHECK_QUOTA, 0);
+	detach_cache_entry(c->cache);
 	c->detached = 1;
 	detach_done:
 	free_entry_to(c->cache, pos);
+
+	if (c->detached < 2 && pos > c->from && is_connection_seekable(c)) {
+		int running = c->running;
+		if (running) interrupt_connection(c);
+		c->from = pos;
+		if (running) run_connection(c);
+		c->detached = 2;
+	}
 }
 
 static void connection_timeout(struct connection *c)
@@ -769,13 +901,6 @@ void set_timeout(struct connection *c)
 	if (c->timer != -1) kill_timer(c->timer);
 	c->timer = install_timer((c->unrestartable ? unrestartable_receive_timeout : receive_timeout) * 500, (void (*)(void *))connection_timeout_1, c);
 }
-
-#if 0
-static void reset_timeout(struct connection *c)
-{
-	if (c->timer != -1) kill_timer(c->timer), c->timer = -1;
-}
-#endif
 
 void abort_all_connections(void)
 {
@@ -821,20 +946,20 @@ static struct list_head blacklist = { &blacklist, &blacklist };
 void add_blacklist_entry(unsigned char *host, int flags)
 {
 	struct blacklist_entry *b;
-	foreach(b, blacklist) if (!strcasecmp(host, b->host)) {
+	foreach(b, blacklist) if (!strcasecmp(cast_const_char host, cast_const_char b->host)) {
 		b->flags |= flags;
 		return;
 	}
-	b = mem_alloc(sizeof(struct blacklist_entry) + strlen(host) + 1);
+	b = mem_alloc(sizeof(struct blacklist_entry) + strlen(cast_const_char host) + 1);
 	b->flags = flags;
-	strcpy(b->host, host);
+	strcpy(cast_char b->host, cast_const_char host);
 	add_to_list(blacklist, b);
 }
 
 void del_blacklist_entry(unsigned char *host, int flags)
 {
 	struct blacklist_entry *b;
-	foreach(b, blacklist) if (!strcasecmp(host, b->host)) {
+	foreach(b, blacklist) if (!strcasecmp(cast_const_char host, cast_const_char b->host)) {
 		b->flags &= ~flags;
 		if (!b->flags) {
 			del_from_list(b);
@@ -847,7 +972,7 @@ void del_blacklist_entry(unsigned char *host, int flags)
 int get_blacklist_flags(unsigned char *host)
 {
 	struct blacklist_entry *b;
-	foreach(b, blacklist) if (!strcasecmp(host, b->host)) return b->flags;
+	foreach(b, blacklist) if (!strcasecmp(cast_const_char host, cast_const_char b->host)) return b->flags;
 	return 0;
 }
 
@@ -860,6 +985,7 @@ struct s_msg_dsc msg_dsc[] = {
 	{S_WAIT,		TEXT_(T_WAITING_IN_QUEUE)},
 	{S_DNS,			TEXT_(T_LOOKING_UP_HOST)},
 	{S_CONN,		TEXT_(T_MAKING_CONNECTION)},
+	{S_CONN_ANOTHER,	TEXT_(T_MAKING_CONNECTION_TO_ANOTHER_ADDRESS)},
 	{S_SOCKS_NEG,		TEXT_(T_SOCKS_NEGOTIATION)},
 	{S_SSL_NEG,		TEXT_(T_SSL_NEGOTIATION)},
 	{S_SENT,		TEXT_(T_REQUEST_SENT)},
@@ -868,7 +994,7 @@ struct s_msg_dsc msg_dsc[] = {
 	{S_PROC,		TEXT_(T_SERVER_IS_PROCESSING_REQUEST)},
 	{S_TRANS,		TEXT_(T_TRANSFERRING)},
 
-	{S_OK,			TEXT_(T_OK)},
+	{S__OK,			TEXT_(T_OK)},
 	{S_INTERRUPTED,		TEXT_(T_INTERRUPTED)},
 	{S_EXCEPT,		TEXT_(T_SOCKET_EXCEPTION)},
 	{S_INTERNAL,		TEXT_(T_INTERNAL_ERROR)},
@@ -878,6 +1004,7 @@ struct s_msg_dsc msg_dsc[] = {
 	{S_CANT_READ,		TEXT_(T_ERROR_READING_FROM_SOCKET)},
 	{S_MODIFIED,		TEXT_(T_DATA_MODIFIED)},
 	{S_BAD_URL,		TEXT_(T_BAD_URL_SYNTAX)},
+	{S_BAD_PROXY,		TEXT_(T_BAD_PROXY_SYNTAX)},
 	{S_TIMEOUT,		TEXT_(T_RECEIVE_TIMEOUT)},
 	{S_RESTART,		TEXT_(T_REQUEST_MUST_BE_RESTARTED)},
 	{S_STATE,		TEXT_(T_CANT_GET_SOCKET_STATE)},
@@ -887,6 +1014,7 @@ struct s_msg_dsc msg_dsc[] = {
 	{S_HTTP_ERROR,		TEXT_(T_BAD_HTTP_RESPONSE)},
 	{S_HTTP_100,		TEXT_(T_HTTP_100)},
 	{S_HTTP_204,		TEXT_(T_NO_CONTENT)},
+	{S_HTTPS_FWD_ERROR,	TEXT_(T_HTTPS_FWD_ERROR)},
 
 	{S_FILE_TYPE,		TEXT_(T_UNKNOWN_FILE_TYPE)},
 	{S_FILE_ERROR,		TEXT_(T_ERROR_OPENING_FILE)},

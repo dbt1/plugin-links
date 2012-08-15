@@ -16,16 +16,6 @@
 #include <math.h>
 #endif /* HAVE_MATH_H */
 
-#endif
-int dither_letters=1;
-
-double user_gamma=1.0; /* 1.0 for 64 lx. This is the number user directly changes in the menu */
-			  
-double display_red_gamma=2.2; /* Red gamma exponent of the display */
-double display_green_gamma=2.2; /* Green gamma exponent of the display */
-double display_blue_gamma=2.2; /* Blue gamma exponent of the display */
-#ifdef G
-
 /* #define this if you want to report missing letters to stderr.
  * Leave it commented up for normal operation and releases! */
 /* #define REPORT_UNKNOWN 1 */
@@ -124,7 +114,8 @@ static inline int compute_width (int ix, int iy, int required_height)
 	return width;
 }
 
-struct lru font_cache; /* This is a cache for screen-ready colored bitmaps
+static struct lru font_cache;
+			/* This is a cache for screen-ready colored bitmaps
                         * of lettrs and/or alpha channels for these (are the
 			* same size, only one byte per pixel and are used
 			* for letters with an image under them )
@@ -987,7 +978,7 @@ void apply_gamma_exponent_and_undercolor_32_to_48(unsigned short *dest,
 		ri=(r*65535)+0.5;
 		gi=(g*65535)+0.5;
 		bi=(b*65535)+0.5;
-#if SIZEOF_UNSIGNED_SHORT > 2
+#if !SIZEOF_UNSIGNED_SHORT || SIZEOF_UNSIGNED_SHORT > 2
 		/* To prevent segfaults in case of crappy floating arithmetics
 		 */
 		if (ri>=65536) ri=65535;
@@ -1046,12 +1037,12 @@ void apply_gamma_exponent_and_undercolor_64_to_48(unsigned short *dest,
 		ri=r*65535+0.5;
 		gi=g*65535+0.5;
 		bi=b*65535+0.5;
-#if SIZEOF_UNSIGNED_SHORT > 2
+#if !SIZEOF_UNSIGNED_SHORT || SIZEOF_UNSIGNED_SHORT > 2
 		/* To prevent segfaults in case of crappy floating arithmetics
 		 */
-		if (ri>=65536) ri=65535;
-		if (gi>=65536) gi=65535;
-		if (bi>=65536) bi=65535;
+		if (ri>=65535) ri=65535;
+		if (gi>=65535) gi=65535;
+		if (bi>=65535) bi=65535;
 #endif /* #if SIZEOF_UNSIGNED_SHORT > 2 */
 		if (((alpha+1U)&255U)>=2U){
 			calpha=65535U-alpha;
@@ -1128,22 +1119,22 @@ void apply_gamma_exponent_48_to_48(unsigned short *dest,
 		a*=inv_65535;
 		a=pow(a,red_gamma);
 		*dest=(a*65535)+0.5;
-#if SIZEOF_UNSIGNED_SHORT > 2
-		if (*dest>=0x10000) *dest=0xffff;
+#if !SIZEOF_UNSIGNED_SHORT || SIZEOF_UNSIGNED_SHORT > 2
+		if (*dest>=0xffff) *dest=0xffff;
 #endif /* #if SIZEOF_UNSIGNED_SHORT > 2 */
 		a=src[1];
 		a*=inv_65535;
 		a=pow(a,green_gamma);
 		dest[1]=(a*65535)+0.5;
-#if SIZEOF_UNSIGNED_SHORT > 2
-		if (dest[1]>=0x10000) dest[1]=0xffff;
+#if !SIZEOF_UNSIGNED_SHORT || SIZEOF_UNSIGNED_SHORT > 2
+		if (dest[1]>=0xffff) dest[1]=0xffff;
 #endif /* #if SIZEOF_UNSIGNED_SHORT > 2 */
 		a=src[2];
 		a*=inv_65535;
 		a=pow(a,blue_gamma);
 		dest[2]=(a*65535)+0.5;
-#if SIZEOF_UNSIGNED_SHORT > 2
-		if (dest[2]>=0x10000) dest[2]=0xffff;
+#if !SIZEOF_UNSIGNED_SHORT || SIZEOF_UNSIGNED_SHORT > 2
+		if (dest[2]>=0xffff) dest[2]=0xffff;
 #endif /* #if SIZEOF_UNSIGNED_SHORT > 2 */
 	}
 }
@@ -1180,22 +1171,22 @@ void apply_gamma_exponent_24_to_48(unsigned short *dest, unsigned char *src, int
 		a*=inv_255;
 		a=pow(a,red_gamma);
 		*dest=(a*65535)+0.5;
-#if SIZEOF_UNSIGNED_SHORT > 2
-		if (*dest>=0x10000) *dest=0xffff;
+#if !SIZEOF_UNSIGNED_SHORT || SIZEOF_UNSIGNED_SHORT > 2
+		if (*dest>=0xffff) *dest=0xffff;
 #endif /* #if SIZEOF_UNSIGNED_SHORT > 2 */
 		a=src[1];
 		a*=inv_255;
 		a=pow(a,green_gamma);
 		dest[1]=(a*65535)+0.5;
-#if SIZEOF_UNSIGNED_SHORT > 2
-		if (dest[1]>=0x10000) dest[1]=0xffff;
+#if !SIZEOF_UNSIGNED_SHORT || SIZEOF_UNSIGNED_SHORT > 2
+		if (dest[1]>=0xffff) dest[1]=0xffff;
 #endif /* #if SIZEOF_UNSIGNED_SHORT > 2 */
 		a=src[2];
 		a*=inv_255;
 		a=pow(a,blue_gamma);
 		dest[2]=(a*65535)+0.5;
-#if SIZEOF_UNSIGNED_SHORT > 2
-		if (dest[2]>=0x10000) dest[2]=0xffff;
+#if !SIZEOF_UNSIGNED_SHORT || SIZEOF_UNSIGNED_SHORT > 2
+		if (dest[2]>=0xffff) dest[2]=0xffff;
 #endif /* #if SIZEOF_UNSIGNED_SHORT > 2 */
 	}
 }
@@ -1219,21 +1210,21 @@ void make_gamma_table(struct cached_image *cimg)
 		cimg->gamma_table=ptr_16;
 		for (a=0;a<256;a++,ptr_16++){
 			*ptr_16=65535*pow(((double)a)*inv,rg)+0.5;
-#if SIZEOF_UNSIGNED_SHORT > 2
+#if !SIZEOF_UNSIGNED_SHORT || SIZEOF_UNSIGNED_SHORT > 2
 		/* To test against crappy arithmetics */
-			if (*ptr_16>=0x10000) *ptr_16=0xffff;
+			if (*ptr_16>=0xffff) *ptr_16=0xffff;
 #endif /* #if SIZEOF_UNSIGNED_SHORT > 2 */
 		}
 		for (a=0;a<256;a++,ptr_16++){
 			*ptr_16=65535*pow(((double)a)*inv,gg)+0.5;
-#if SIZEOF_UNSIGNED_SHORT > 2
-			if (*ptr_16>=0x10000) *ptr_16=0xffff;
+#if !SIZEOF_UNSIGNED_SHORT || SIZEOF_UNSIGNED_SHORT > 2
+			if (*ptr_16>=0xffff) *ptr_16=0xffff;
 #endif /* #if SIZEOF_UNSIGNED_SHORT > 2 */
 		}
 		for (a=0;a<256;a++,ptr_16++){
 			*ptr_16=65535*pow(((double)a)*inv,bg)+0.5;
-#if SIZEOF_UNSIGNED_SHORT > 2
-			if (*ptr_16>=0x10000) *ptr_16=0xffff;
+#if !SIZEOF_UNSIGNED_SHORT || SIZEOF_UNSIGNED_SHORT > 2
+			if (*ptr_16>=0xffff) *ptr_16=0xffff;
 #endif /* #if SIZEOF_UNSIGNED_SHORT > 2 */
 		}
 	}else{
@@ -1243,20 +1234,20 @@ void make_gamma_table(struct cached_image *cimg)
 		cimg->gamma_table=ptr_16;
 		for (a=0;a<0x10000;a++,ptr_16++){
 			*ptr_16=65535*pow(((double)a)*inv,rg)+0.5;
-#if SIZEOF_UNSIGNED_SHORT > 2
-			if (*ptr_16>=0x10000) *ptr_16=0xffff;
+#if !SIZEOF_UNSIGNED_SHORT || SIZEOF_UNSIGNED_SHORT > 2
+			if (*ptr_16>=0xffff) *ptr_16=0xffff;
 #endif /* #if SIZEOF_UNSIGNED_SHORT > 2 */
 		}
 		for (a=0;a<0x10000;a++,ptr_16++){
 			*ptr_16=65535*pow(((double)a)*inv,gg)+0.5;
-#if SIZEOF_UNSIGNED_SHORT > 2
-			if (*ptr_16>=0x10000) *ptr_16=0xffff;
+#if !SIZEOF_UNSIGNED_SHORT || SIZEOF_UNSIGNED_SHORT > 2
+			if (*ptr_16>=0xffff) *ptr_16=0xffff;
 #endif /* #if SIZEOF_UNSIGNED_SHORT > 2 */
 		}
 		for (a=0;a<0x10000;a++,ptr_16++){
 			*ptr_16=65535*pow(((double)a)*inv,bg)+0.5;
-#if SIZEOF_UNSIGNED_SHORT > 2
-			if (*ptr_16>=0x10000) *ptr_16=0xffff;
+#if !SIZEOF_UNSIGNED_SHORT || SIZEOF_UNSIGNED_SHORT > 2
+			if (*ptr_16>=0xffff) *ptr_16=0xffff;
 #endif /* #if SIZEOF_UNSIGNED_SHORT > 2 */
 		}
 	}
@@ -1293,8 +1284,8 @@ unsigned short apply_gamma_single_8_to_16(unsigned char input, float gamma)
 	a=pow(a,gamma);
 	a*=65535;
 	retval = a+0.5;
-#if SIZEOF_UNSIGNED_SHORT > 2
-			if (retval>=0x10000) retval=0xffff;
+#if !SIZEOF_UNSIGNED_SHORT || SIZEOF_UNSIGNED_SHORT > 2
+			if (retval>=0xffff) retval=0xffff;
 #endif /* #if SIZEOF_UNSIGNED_SHORT > 2 */
 	return retval;
 }
@@ -1312,14 +1303,13 @@ unsigned short apply_gamma_single_16_to_16(unsigned short input, float gamma)
 	unsigned short retval;
 	
 	retval = 65535*pow(((float)input)/65535,gamma)+0.5;
-#if SIZEOF_UNSIGNED_SHORT > 2
-			if (retval>=0x10000) retval=0xffff;
+#if !SIZEOF_UNSIGNED_SHORT || SIZEOF_UNSIGNED_SHORT > 2
+			if (retval>=0xffff) retval=0xffff;
 #endif /* #if SIZEOF_UNSIGNED_SHORT > 2 */
 	return retval;
 }
 
 /* Points to the next unread byte from png data block */
-extern unsigned char font_data[];
 extern struct letter letter_data[];
 extern struct font font_table[];
 extern int n_fonts; /* Number of fonts. font number 0 is system_font (it's
@@ -1422,9 +1412,19 @@ unsigned char *png_data, int png_length, struct style *style)
 	work.pointer = png_data;
 	work.length = png_length;
 	
+	retry1:
 	png_ptr=png_create_read_struct(PNG_LIBPNG_VER_STRING,
 			NULL, my_png_error, my_png_warning);
+	if (!png_ptr) {
+		if (out_of_memory(0, NULL, 0)) goto retry1;
+		fatal_exit("png_create_read_struct failed");
+	}
+	retry2:
 	info_ptr=png_create_info_struct(png_ptr);
+	if (!info_ptr) {
+		if (out_of_memory(0, NULL, 0)) goto retry2;
+		fatal_exit("png_create_info_struct failed");
+	}
 	png_set_read_fn(png_ptr,&work,(png_rw_ptr)&read_stored_data);
 	png_read_info(png_ptr, info_ptr);
 	*x=png_get_image_width(png_ptr,info_ptr);
@@ -1555,6 +1555,9 @@ unsigned char *png_data, int png_length, struct style *style)
 	mem_free(interm2);
 }
 
+static struct font_cache_entry *locked_bw_entry = NULL;
+static struct font_cache_entry *locked_color_entry = NULL;
+
 /* Adds required entry into font_cache and returns pointer to the entry.
  * We assume the entry is FC_COLOR.
  */
@@ -1579,11 +1582,14 @@ static struct font_cache_entry *supply_color_cache_entry (struct graphics_driver
 		found=mem_alloc(sizeof(*found));
 		found->bitmap.y=style->height;
 		load_scaled_char(&(found->bitmap.data),&(found->bitmap.x),
-			found->bitmap.y, font_data+letter->begin,
+			found->bitmap.y, letter->begin,
 			letter->length, style);
 		do_free=1;
+	} else {
+		locked_bw_entry = found;
 	}
 	new=mem_alloc(sizeof(*new));
+	locked_color_entry = new;
 	new->type=FC_COLOR;
 	new->bitmap=found->bitmap;
 	new->r0=style->r0;
@@ -1628,6 +1634,8 @@ static struct font_cache_entry *supply_color_cache_entry (struct graphics_driver
 	if (do_free){
 		mem_free(found->bitmap.data);
 		mem_free(found);
+	} else {
+		locked_bw_entry = NULL;
 	}
 	bytes_consumed=new->bitmap.x*new->bitmap.y*(gd->depth&7);
 	/* Number of bytes per pixel in passed bitmaps */
@@ -1638,31 +1646,35 @@ static struct font_cache_entry *supply_color_cache_entry (struct graphics_driver
 	return new;
 }
 
-/* Prunes the cache to comply with maximum size */
-static inline void prune_font_cache(struct graphics_driver *gd)
+static int destroy_font_cache_bottom(void)
 {
 	struct font_cache_entry *bottom;
+	bottom=lru_get_bottom(&font_cache);
+	if (!bottom) return 0;
+	if (bottom == locked_bw_entry || bottom == locked_color_entry) return 0;
+	if (bottom->type==FC_COLOR){
+		drv->unregister_bitmap(&(bottom->bitmap));
+	}else{
+		mem_free(bottom->bitmap.data);
+	}
+	mem_free(bottom);
+	lru_destroy_bottom(&font_cache);
+	return 1;
+}
 
-	while(font_cache.bytes>font_cache.max_bytes){
-		/* Prune bottom entry of font cache */
-		bottom=lru_get_bottom(&font_cache);
-		if (!bottom){
-#ifdef DEBUG
-			if (font_cache.bytes||font_cache.items){
-				internal("font cache is empty and contains\
-some items or bytes at the same time.\n");
-			}
-#endif
+/* Prunes the cache to comply with maximum size */
+static int prune_font_cache(void)
+{
+	int r = 0;
+
+	while (font_cache.bytes > (unsigned)font_cache_size) {
+		if (destroy_font_cache_bottom()) {
+			r = 1;
+		} else {
 			break;
 		}
-		if (bottom->type==FC_COLOR){
-			gd->unregister_bitmap(&(bottom->bitmap));
-		}else{
-			mem_free(bottom->bitmap.data);
-		}
-		mem_free(bottom);
-		lru_destroy_bottom(&font_cache);
 	}
+	return r;
 }
 
 /* Prints a letter to the specified position and
@@ -1672,6 +1684,7 @@ inline static int print_letter(struct graphics_driver *gd, struct
 	int char_number)
 
 {	
+	int xw;
 	struct font_cache_entry *found;
 	struct font_cache_entry template;
 	struct letter *letter;
@@ -1694,9 +1707,13 @@ inline static int print_letter(struct graphics_driver *gd, struct
 
 	found=lru_lookup(&font_cache, &template, letter->color_list);
 	if (!found) found=supply_color_cache_entry(gd, style, letter);
+	else locked_color_entry = found;
 	gd->draw_bitmap(device, &(found->bitmap), x, y);
-	prune_font_cache(gd);
-	return found->bitmap.x;
+	xw = found->bitmap.x;
+	if (locked_color_entry != found) internal("bad letter lock");
+	locked_color_entry = NULL;
+	prune_font_cache();
+	return xw;
 }
 
 /* Must return values that are:
@@ -1765,7 +1782,7 @@ int x, int y, struct style *style, unsigned char *text, int *width)
 		style -> flags=original_flags;
 		return;
 	}
-	while (*text){
+	while (*text) {
 		int p;
 		int u;
 		GET_UTF_8(text, u);
@@ -1829,33 +1846,25 @@ static int compare_font_entries(void *entry, void *template)
 /* If the cache already exists, it is destroyed and reallocated. If you call it with the same
  * size argument, only a cache flush will yield.
  */
-static void init_font_cache(int bytes)
+static void init_font_cache(void)
 {
-	lru_init(&font_cache, &compare_font_entries, bytes);
+	lru_init(&font_cache, &compare_font_entries);
 }
 
 /* Ensures there are no lru_entry objects allocated - destroys them.
  * Also destroys the bitmaps asociated with them. Does not destruct the
  font_cache per se.
  */
-void destroy_font_cache(void)
+static void destroy_font_cache(void)
 {
-	struct font_cache_entry *bottom;
-	
-	while((bottom=lru_get_bottom(&font_cache))){
-		if (bottom->type==FC_COLOR){
-			drv->unregister_bitmap(&(bottom->bitmap));
-		}else{
-			/* Then it must be FC_BW. */
-			mem_free(bottom->bitmap.data);
-		}
-		mem_free(bottom);
-		lru_destroy_bottom(&font_cache);
-	}
+	while (destroy_font_cache_bottom())
+		;
+	if (lru_get_bottom(&font_cache))
+		internal("destroy_font_cache: cache not freed due to locks");
 }
 
 /* Returns 0 in case the char is not found. */
-static inline int g_get_width(struct style *style, int charcode)
+static inline int g_get_width(struct style *style, unsigned charcode)
 {
 	int x, y, width;
 
@@ -1881,32 +1890,36 @@ int g_text_width(struct style *style, unsigned char *text)
 	return w;
 }
 
-int g_char_width(struct style *style, int charcode)
+int g_char_width(struct style *style, unsigned charcode)
 {
 	return g_get_width(style, charcode);
 }
 
 int g_wrap_text(struct wrap_struct *w)
 {
+	unsigned char *init_text = w->text;
 	while (*w->text) {
 		int u;
 		int s;
-		if (*w->text == ' ') w->last_wrap = w->text,
-				     w->last_wrap_obj = w->obj;
+		unsigned char *l_text = w->text;
+		if (*l_text == ' ') w->last_wrap = l_text,
+				    w->last_wrap_obj = w->obj;
 		GET_UTF_8(w->text, u);
 		if (!u) continue;
-		if (u == 0x01 || u == 0xa0) u = ' ';
 		s = g_get_width(w->style, u);
-		if (u == 0xad) s = 0;
 		if ((w->pos += s) <= w->width) {
 			c:
-			if (u != 0xad || *w->text == ' ') continue;
+			if (u != 0xad || *w->text == ' ' || w->force_break) continue;
 			s = g_char_width(w->style, '-');
 			if (w->pos + s <= w->width || (!w->last_wrap && !w->last_wrap_obj)) {
-				w->last_wrap = w->text;
+				w->last_wrap = l_text;
 				w->last_wrap_obj = w->obj;
 				continue;
 			}
+		}
+		if (w->force_break && !w->last_wrap && l_text != init_text) {
+			w->last_wrap = l_text;
+			w->last_wrap_obj = w->obj;
 		}
 		if (!w->last_wrap && !w->last_wrap_obj) goto c;
 		return 0;
@@ -1917,18 +1930,46 @@ int g_wrap_text(struct wrap_struct *w)
 void update_aspect(void)
 {
 	aspect=aspect_on?(aspect_native*bfu_aspect+0.5):65536UL;
+	destroy_font_cache();
+}
+
+unsigned long fontcache_info(int type)
+{
+	switch (type) {
+		case CI_BYTES:
+			return font_cache.bytes;
+		case CI_FILES:
+			return font_cache.items;
+		default:
+			internal("fontcache_info: query %d", type);
+			return 0;
+	}
+}
+
+static int shrink_font_cache(int u)
+{
+	int freed_something = 0;
+	int has_something;
+	if (u == SH_CHECK_QUOTA) {
+		freed_something = prune_font_cache();
+	}
+	if (u == SH_FREE_ALL) {
+		while (destroy_font_cache_bottom())
+			freed_something = 1;
+	}
+	if (u == SH_FREE_SOMETHING) {
+		freed_something = destroy_font_cache_bottom();
+	}
+	has_something = !!lru_get_bottom(&font_cache);
+	return	(freed_something ? ST_SOMETHING_FREED : 0) |
+		(has_something ? 0 : ST_CACHE_EMPTY);
 }
 
 void init_dip(void)
 {
+	init_font_cache();
 	update_aspect();
-	/* Initializes to 2 MByte */
-	init_font_cache(2000000);
-}
-
-void shutdown_dip(void)
-{
-	destroy_font_cache();
+	register_cache_upcall(shrink_font_cache, MF_GPI, cast_uchar "fontcache");
 }
 
 static void recode_font_name(unsigned char **name)
@@ -1936,15 +1977,15 @@ static void recode_font_name(unsigned char **name)
 	int dashes=0;
 	unsigned char *p;
 
-	if (!strcmp(*name,"monospaced")) *name="courier-medium-roman-serif-mono";
-	if (!strcmp(*name,"monospace")) *name="courier-medium-roman-serif-mono";
-	else if (!strcmp(*name,"")) *name="century_school-medium-roman-serif-vari";
+	if (!strcmp(cast_const_char *name,"monospaced")) *name=cast_uchar "courier-medium-roman-serif-mono";
+	if (!strcmp(cast_const_char *name,"monospace")) *name=cast_uchar "courier-medium-roman-serif-mono";
+	else if (!strcmp(cast_const_char *name,"")) *name=cast_uchar "century_school-medium-roman-serif-vari";
 	p=*name;
 	while(*p){
 		if (*p=='-')dashes++;
 		p++;
 	}
-	if (dashes!=4) *name="century_school-medium-roman-serif-vari";
+	if (dashes!=4) *name=cast_uchar "century_school-medium-roman-serif-vari";
 }
 
 /* Compares single=a multi=b-c-a as matching.
@@ -1954,17 +1995,17 @@ static void recode_font_name(unsigned char **name)
 static int compare_family(unsigned char *single, unsigned char *multi)
 {
 	unsigned char *p,*r;
-	int single_length=strlen(single);
+	int single_length=strlen(cast_const_char single);
 
 	r=multi;
 	while(1){
 		p=r;
 		while (*r&&*r!='-')r++;
-		if ((r-p==single_length)&&!strncmp(single,p,r-p)) return 0;
+		if ((r-p==single_length)&&!strncmp(cast_const_char single,cast_const_char p,r-p)) return 0;
 		if (!*r) return 1;
 		r++;
 	}
-	return 1;
+	not_reached(return 1;)
 }
 
 /* Input name must contain exactly 4 dashes, otherwise the
@@ -2002,20 +2043,20 @@ static int fill_style_table(int * table, unsigned char *name)
 	*p=0;
 	p++;
 	spacing=p;
-	monospaced=!strcmp(spacing,"mono");
+	monospaced=!strcmp(cast_const_char spacing,"mono");
 	
 	for (pass=0;pass<6;pass++){
 		for (f=1;f<n_fonts;f++){
 			/* Font 0 must not be int style_table */
 			result=compare_family(family,font_table[f].family);
 			result<<=1;
-			result|=!!strcmp(weight,font_table[f].weight);
+			result|=!!strcmp(cast_const_char weight,cast_const_char font_table[f].weight);
 			result<<=1;
-			result|=!!strcmp(slant,font_table[f].slant);
+			result|=!!strcmp(cast_const_char slant,cast_const_char font_table[f].slant);
 			result<<=1;
-			result|=!!strcmp(adstyl,font_table[f].adstyl);
+			result|=!!strcmp(cast_const_char adstyl,cast_const_char font_table[f].adstyl);
 			result<<=1;
-			result|=!!strcmp(spacing,font_table[f].spacing);
+			result|=!!strcmp(cast_const_char spacing,cast_const_char font_table[f].spacing);
 			result^=xors[pass];
 			result&=masks[pass];
 			if (!result) /* Fot complies */
@@ -2125,7 +2166,7 @@ long real_dip_get_color_sRGB(int rgb)
 
 /* ATTENTION!!! allocates using malloc. Due to braindead Xlib, which
  * frees it using free and thus it is not possible to use mem_alloc. */
-void get_links_icon(unsigned char **data, int *width, int* height, int depth)
+void get_links_icon(unsigned char **data, int *width, int *height, int *skip, int pad)
 {
 	struct bitmap b;
 	unsigned short *tmp1;
@@ -2135,10 +2176,12 @@ void get_links_icon(unsigned char **data, int *width, int* height, int depth)
 	b.y=48;
 	*width=b.x;
 	*height=b.y;
-	b.skip=b.x*(depth&7);
+	b.skip=b.x*(drv->depth&7);
+	while (b.skip % pad) b.skip++;
+	*skip=b.skip;
 	retry:
 	if (!(b.data=*data=malloc(b.skip*b.y))) {
-		out_of_memory("icon malloc", b.skip*b.y);
+		out_of_memory(0, cast_uchar "icon malloc", b.skip*b.y);
 		goto retry;
 	}
 	tmp1=mem_alloc(6*b.y*b.x);

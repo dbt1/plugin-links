@@ -6,23 +6,189 @@
 #include "links.h"
 
 
-/*static inline struct session *get_term_session(struct terminal *term)
+static unsigned char *version_texts[] = {
+	TEXT_(T_LINKS_VERSION),
+	TEXT_(T_OPERATING_SYSTEM_TYPE),
+	TEXT_(T_OPERATING_SYSTEM_VERSION),
+	TEXT_(T_COMPILER),
+	TEXT_(T_COMPILE_TIME),
+	TEXT_(T_WORD_SIZE),
+	TEXT_(T_DEBUGGING_LEVEL),
+	TEXT_(T_IPV6),
+	TEXT_(T_COMPRESSION_METHODS),
+	TEXT_(T_ENCRYPTION),
+	TEXT_(T_UTF8_TERMINAL),
+#if defined(__linux__) || defined(__LINUX__) || defined(__SPAD__) || defined(USE_GPM)
+	TEXT_(T_GPM_MOUSE_DRIVER),
+#endif
+#ifdef OS2
+	TEXT_(T_XTERM_FOR_OS2),
+#endif
+	TEXT_(T_GRAPHICS_MODE),
+#ifdef G
+	TEXT_(T_IMAGE_LIBRARIES),
+#endif
+	NULL,
+};
+
+static void add_and_pad(unsigned char **s, int *l, struct terminal *term, unsigned char *str, int maxlen)
 {
-	if ((void *)term->windows.prev == &term->windows) {
-		internal("terminal has no windows");
-		return NULL;
+	unsigned char *x = _(str, term);
+	int len = cp_len(term->spec->charset, x);
+	add_to_str(s, l, x);
+	add_to_str(s, l, cast_uchar ":  ");
+	while (len++ < maxlen) add_chr_to_str(s, l, ' ');
+}
+
+static void menu_version(struct terminal *term)
+{
+	int i;
+	int maxlen = 0;
+	unsigned char *s;
+	int l;
+	unsigned char **text_ptr;
+	for (i = 0; version_texts[i]; i++) {
+		unsigned char *t = _(version_texts[i], term);
+		int tl = cp_len(term->spec->charset, t);
+		if (tl > maxlen)
+			maxlen = tl;
 	}
-	return ((struct window *)term->windows.prev)->data;
-}*/
+
+	s = init_str();
+	l = 0;
+	text_ptr = version_texts;
+
+	add_and_pad(&s, &l, term, *text_ptr++, maxlen);
+	add_to_str(&s, &l, cast_uchar VERSION_STRING);
+	add_to_str(&s, &l, cast_uchar "\n");
+
+	add_and_pad(&s, &l, term, *text_ptr++, maxlen);
+	add_to_str(&s, &l, cast_uchar SYSTEM_NAME);
+	add_to_str(&s, &l, cast_uchar "\n");
+
+	add_and_pad(&s, &l, term, *text_ptr++, maxlen);
+	add_to_str(&s, &l, system_name);
+	add_to_str(&s, &l, cast_uchar "\n");
+
+	add_and_pad(&s, &l, term, *text_ptr++, maxlen);
+	add_to_str(&s, &l, compiler_name);
+	add_to_str(&s, &l, cast_uchar "\n");
+
+	add_and_pad(&s, &l, term, *text_ptr++, maxlen);
+	add_to_str(&s, &l, cast_uchar(__DATE__ "  " __TIME__));
+	add_to_str(&s, &l, cast_uchar "\n");
+
+	add_and_pad(&s, &l, term, *text_ptr++, maxlen);
+	add_to_str(&s, &l, _(TEXT_(T_MEMORY), term));
+	add_to_str(&s, &l, cast_uchar " ");
+	add_num_to_str(&s, &l, sizeof(void *) * 8);
+	add_to_str(&s, &l, cast_uchar "-bit, ");
+	add_to_str(&s, &l, _(TEXT_(T_FILE_SIZE), term));
+	add_to_str(&s, &l, cast_uchar " ");
+	add_num_to_str(&s, &l, sizeof(off_t) * 8 /*- ((off_t)-1 < 0)*/);
+	add_to_str(&s, &l, cast_uchar "-bit");
+	add_to_str(&s, &l, cast_uchar "\n");
+
+	add_and_pad(&s, &l, term, *text_ptr++, maxlen);
+	add_num_to_str(&s, &l, DEBUGLEVEL);
+	add_to_str(&s, &l, cast_uchar "\n");
+
+	add_and_pad(&s, &l, term, *text_ptr++, maxlen);
+#ifdef SUPPORT_IPV6
+	if (!support_ipv6) add_to_str(&s, &l, _(TEXT_(T_NOT_ENABLED_IN_SYSTEM), term));
+	else if (!ipv6_full_access()) add_to_str(&s, &l, _(TEXT_(T_LOCAL_NETWORK_ONLY), term));
+	else add_to_str(&s, &l, _(TEXT_(T_YES), term));
+#else
+	add_to_str(&s, &l, _(TEXT_(T_NO), term));
+#endif
+	add_to_str(&s, &l, cast_uchar "\n");
+
+	add_and_pad(&s, &l, term, *text_ptr++, maxlen);
+#ifdef HAVE_ANY_COMPRESSION
+	add_compress_methods(&s, &l);
+#else
+	add_to_str(&s, &l, _(TEXT_(T_NO), term));
+#endif
+	add_to_str(&s, &l, cast_uchar "\n");
+
+	add_and_pad(&s, &l, term, *text_ptr++, maxlen);
+#ifdef HAVE_SSL
+	add_to_str(&s, &l, (unsigned char *)SSLeay_version(SSLEAY_VERSION));
+#else
+	add_to_str(&s, &l, _(TEXT_(T_NO), term));
+#endif
+	add_to_str(&s, &l, cast_uchar "\n");
+
+	add_and_pad(&s, &l, term, *text_ptr++, maxlen);
+#ifdef ENABLE_UTF8
+	add_to_str(&s, &l, _(TEXT_(T_YES), term));
+#else
+	add_to_str(&s, &l, _(TEXT_(T_NO), term));
+#endif
+	add_to_str(&s, &l, cast_uchar "\n");
+
+#if defined(__linux__) || defined(__LINUX__) || defined(__SPAD__) || defined(USE_GPM)
+	add_and_pad(&s, &l, term, *text_ptr++, maxlen);
+#ifdef USE_GPM
+	add_gpm_version(&s, &l);
+#else
+	add_to_str(&s, &l, _(TEXT_(T_NO), term));
+#endif
+	add_to_str(&s, &l, cast_uchar "\n");
+#endif
+
+#ifdef OS2
+	add_and_pad(&s, &l, term, *text_ptr++, maxlen);
+#ifdef X2
+	add_to_str(&s, &l, _(TEXT_(T_YES), term));
+#else
+	add_to_str(&s, &l, _(TEXT_(T_NO), term));
+#endif
+	add_to_str(&s, &l, cast_uchar "\n");
+#endif
+
+	add_and_pad(&s, &l, term, *text_ptr++, maxlen);
+#ifdef G
+	i = l;
+	add_graphics_drivers(&s, &l);
+	for (; s[i]; i++) if (s[i - 1] == ' ') s[i] = upcase(s[i]);
+#else
+	add_to_str(&s, &l, _(TEXT_(T_NO), term));
+#endif
+	add_to_str(&s, &l, cast_uchar "\n");
+
+#ifdef G
+	add_and_pad(&s, &l, term, *text_ptr++, maxlen);
+	add_png_version(&s, &l);
+#ifdef HAVE_JPEG
+	add_to_str(&s, &l, cast_uchar ", ");
+	add_jpeg_version(&s, &l);
+#endif
+#ifdef HAVE_TIFF
+	add_to_str(&s, &l, cast_uchar ", ");
+	add_tiff_version(&s, &l);
+#endif
+	add_to_str(&s, &l, cast_uchar "\n");
+#endif
+
+	s[l - 1] = 0;
+	if (*text_ptr)
+		internal("menu_version: text mismatched");
+	
+	msg_box(term, getml(s, NULL), TEXT_(T_VERSION_INFORMATION), AL_LEFT | AL_MONO, s, NULL, 1, TEXT_(T_OK), NULL, B_ENTER | B_ESC);
+}
 
 static void menu_about(struct terminal *term, void *d, struct session *ses)
 {
-	msg_box(term, NULL, TEXT_(T_ABOUT), AL_CENTER | AL_EXTD_TEXT, TEXT_(T_LINKS__LYNX_LIKE), "\r\n\r\nadapted 2009 for Coolstream by focus\n","", NULL, NULL, 1, TEXT_(T_OK), NULL, B_ENTER | B_ESC);
+	msg_box(term, NULL, TEXT_(T_ABOUT), AL_CENTER | AL_EXTD_TEXT, TEXT_(T_LINKS__LYNX_LIKE), "\r\n\r\nadapted 2009 for Coolstream by focus\n","", NULL, term, 2, TEXT_(T_OK), NULL, B_ENTER | B_ESC, TEXT_(T_VERSION), menu_version, 0);
 }
 
 static void menu_keys(struct terminal *term, void *d, struct session *ses)
 {
-	msg_box(term, NULL, TEXT_(T_KEYS), AL_LEFT | AL_MONO, TEXT_(T_KEYS_DESC), NULL, 1, TEXT_(T_OK), NULL, B_ENTER | B_ESC);
+	if (!term->spec->braille)
+		msg_box(term, NULL, TEXT_(T_KEYS), AL_LEFT | AL_MONO, TEXT_(T_KEYS_DESC), NULL, 1, TEXT_(T_OK), NULL, B_ENTER | B_ESC);
+	else
+		msg_box(term, NULL, TEXT_(T_KEYS), AL_LEFT | AL_MONO | AL_EXTD_TEXT, TEXT_(T_KEYS_DESC), cast_uchar "\n", TEXT_(T_KEYS_BRAILLE_DESC), NULL, NULL, 1, TEXT_(T_OK), NULL, B_ENTER | B_ESC);
 }
 
 void activate_keys(struct session *ses)
@@ -37,18 +203,18 @@ static void menu_copying(struct terminal *term, void *d, struct session *ses)
 
 static void menu_manual(struct terminal *term, void *d, struct session *ses)
 {
-	goto_url(ses, LINKS_MANUAL_URL);
+	goto_url(ses, cast_uchar LINKS_MANUAL_URL);
 }
 
 static void menu_homepage(struct terminal *term, void *d, struct session *ses)
 {
-	goto_url(ses, LINKS_HOMEPAGE_URL);
+	goto_url(ses, cast_uchar LINKS_HOMEPAGE_URL);
 }
 
 #ifdef G
 static void menu_calibration(struct terminal *term, void *d, struct session *ses)
 {
-	goto_url(ses, LINKS_CALIBRATION_URL);
+	goto_url(ses, cast_uchar LINKS_CALIBRATION_URL);
 }
 #endif
 
@@ -59,7 +225,7 @@ static void menu_for_frame(struct terminal *term, void (*f)(struct session *, st
 
 static void menu_goto_url(struct terminal *term, void *d, struct session *ses)
 {
-	dialog_goto_url(ses, "");
+	dialog_goto_url(ses, cast_uchar "");
 }
 
 static void menu_save_url_as(struct terminal *term, void *d, struct session *ses)
@@ -67,14 +233,14 @@ static void menu_save_url_as(struct terminal *term, void *d, struct session *ses
 	dialog_save_url(ses);
 }
 
-static void menu_save_bookmarks(struct terminal *term, void *d, struct session *ses)
-{
-	save_bookmarks();
-}
-
 static void menu_go_back(struct terminal *term, void *d, struct session *ses)
 {
-	go_back(ses);
+	go_back(ses, 1);
+}
+
+static void menu_go_forward(struct terminal *term, void *d, struct session *ses)
+{
+	go_back(ses, -1);
 }
 
 static void menu_reload(struct terminal *term, void *d, struct session *ses)
@@ -115,7 +281,7 @@ struct refresh {
 	struct terminal *term;
 	struct window *win;
 	struct session *ses;
-	void (*fn)(struct terminal *term, void *d, struct session *ses);
+	int (*fn)(struct terminal *term, struct refresh *r);
 	void *data;
 	int timer;
 };
@@ -123,7 +289,8 @@ struct refresh {
 static void refresh(struct refresh *r)
 {
 	r->timer = -1;
-	r->fn(r->term, r->data, r->ses);
+	if (r->fn(r->term, r) > 0)
+		return;
 	delete_window(r->win);
 }
 
@@ -138,221 +305,287 @@ static void refresh_abort(struct dialog_data *dlg)
 	end_refresh(dlg->dlg->udata2);
 }
 
-static void cache_inf(struct terminal *term, void *d, struct session *ses)
+static int resource_info(struct terminal *term, struct refresh *r2)
 {
-	unsigned char *a1, *a2, *a3, *a4, *a5, *a6, *a7, *a8, *a9, *a10, *a11, *a12, *a13, *a14, *a15, *a16;
-#ifdef G
-	unsigned char *b14, *b15, *b16, *b17;
-	unsigned char *c14, *c15, *c16, *c17;
-#endif
-	int l = 0;
+	unsigned char *a;
+	int l;
 	struct refresh *r;
+
 	r = mem_alloc(sizeof(struct refresh));
 	r->term = term;
 	r->win = NULL;
-	r->ses = ses;
-	r->fn = cache_inf;
-	r->data = d;
+	r->fn = resource_info;
 	r->timer = -1;
 	l = 0;
-	l = 0, a1 = init_str(); add_to_str(&a1, &l, ": "); add_num_to_str(&a1, &l, select_info(CI_FILES));add_to_str(&a1, &l, " ");
-	l = 0, a2 = init_str(); add_to_str(&a2, &l, ", "); add_num_to_str(&a2, &l, select_info(CI_TIMERS));add_to_str(&a2, &l, " ");
-	l = 0, a3 = init_str(); add_to_str(&a3, &l, ".\n");
+	a = init_str();
 
-	l = 0, a4 = init_str(); add_to_str(&a4, &l, ": "); add_num_to_str(&a4, &l, connect_info(CI_FILES));add_to_str(&a4, &l, " ");
-	l = 0, a5 = init_str(); add_to_str(&a5, &l, ", "); add_num_to_str(&a5, &l, connect_info(CI_CONNECTING));add_to_str(&a5, &l, " ");
-	l = 0, a6 = init_str(); add_to_str(&a6, &l, ", "); add_num_to_str(&a6, &l, connect_info(CI_TRANSFER));add_to_str(&a6, &l, " ");
-	l = 0, a7 = init_str(); add_to_str(&a7, &l, ", "); add_num_to_str(&a7, &l, connect_info(CI_KEEP));add_to_str(&a7, &l, " ");
-	l = 0, a8 = init_str(); add_to_str(&a8, &l, ".\n");
+	add_to_str(&a, &l, _(TEXT_(T_RESOURCES), term));
+	add_to_str(&a, &l, cast_uchar ": ");
+	add_unsigned_long_num_to_str(&a, &l, select_info(CI_FILES));
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_HANDLES), term));
+	add_to_str(&a, &l, cast_uchar ", ");
+	add_unsigned_long_num_to_str(&a, &l, select_info(CI_TIMERS));
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_TIMERS), term));
+	add_to_str(&a, &l, cast_uchar ".\n");
 
-	l = 0, a9 = init_str(); add_to_str(&a9, &l, ": "); add_num_to_str(&a9, &l, cache_info(CI_BYTES));add_to_str(&a9, &l, " ");
-	l = 0, a10 = init_str(); add_to_str(&a10, &l, ", "); add_num_to_str(&a10, &l, cache_info(CI_FILES));add_to_str(&a10, &l, " ");
-	l = 0, a11 = init_str(); add_to_str(&a11, &l, ", "); add_num_to_str(&a11, &l, cache_info(CI_LOCKED));add_to_str(&a11, &l, " ");
-	l = 0, a12 = init_str(); add_to_str(&a12, &l, ", "); add_num_to_str(&a12, &l, cache_info(CI_LOADING));add_to_str(&a12, &l, " ");
-	l = 0, a13 = init_str(); add_to_str(&a13, &l, ".\n");
+	add_to_str(&a, &l, _(TEXT_(T_CONNECTIONS), term));
+	add_to_str(&a, &l, cast_uchar ": ");
+	add_unsigned_long_num_to_str(&a, &l, connect_info(CI_FILES) - connect_info(CI_CONNECTING) - connect_info(CI_TRANSFER));
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_WAITING), term));
+	add_to_str(&a, &l, cast_uchar ", ");
+	add_unsigned_long_num_to_str(&a, &l, connect_info(CI_CONNECTING));
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_CONNECTING), term));
+	add_to_str(&a, &l, cast_uchar ", ");
+	add_unsigned_long_num_to_str(&a, &l, connect_info(CI_TRANSFER));
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_tRANSFERRING), term));
+	add_to_str(&a, &l, cast_uchar ", ");
+	add_unsigned_long_num_to_str(&a, &l, connect_info(CI_KEEP));
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_KEEPALIVE), term));
+	add_to_str(&a, &l, cast_uchar ".\n");
+
+	add_to_str(&a, &l, _(TEXT_(T_MEMORY_CACHE), term));
+	add_to_str(&a, &l, cast_uchar ": ");
+	add_unsigned_long_num_to_str(&a, &l, cache_info(CI_BYTES));
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_BYTES), term));
+	add_to_str(&a, &l, cast_uchar ", ");
+	add_unsigned_long_num_to_str(&a, &l, cache_info(CI_FILES));
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_FILES), term));
+	add_to_str(&a, &l, cast_uchar ", ");
+	add_unsigned_long_num_to_str(&a, &l, cache_info(CI_LOCKED));
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_LOCKED), term));
+	add_to_str(&a, &l, cast_uchar ", ");
+	add_unsigned_long_num_to_str(&a, &l, cache_info(CI_LOADING));
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_LOADING), term));
+	add_to_str(&a, &l, cast_uchar ".\n");
+
+#ifdef HAVE_ANY_COMPRESSION
+	add_to_str(&a, &l, _(TEXT_(T_DECOMPRESSED_CACHE), term));
+	add_to_str(&a, &l, cast_uchar ": ");
+	add_unsigned_long_num_to_str(&a, &l, decompress_info(CI_BYTES));
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_BYTES), term));
+	add_to_str(&a, &l, cast_uchar ", ");
+	add_unsigned_long_num_to_str(&a, &l, decompress_info(CI_FILES));
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_FILES), term));
+	add_to_str(&a, &l, cast_uchar ", ");
+	add_unsigned_long_num_to_str(&a, &l, decompress_info(CI_LOCKED));
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_LOCKED), term));
+	add_to_str(&a, &l, cast_uchar ".\n");
+#endif
 
 #ifdef G
 	if (F) {
-		l = 0, b14 = init_str();
-		add_to_str(&b14, &l, ", ");
-		add_num_to_str(&b14, &l, imgcache_info(CI_BYTES));
-		add_to_str(&b14, &l, " ");
+		add_to_str(&a, &l, _(TEXT_(T_IMAGE_CACHE), term));
+		add_to_str(&a, &l, cast_uchar ": ");
+		add_unsigned_long_num_to_str(&a, &l, imgcache_info(CI_BYTES));
+		add_to_str(&a, &l, cast_uchar " ");
+		add_to_str(&a, &l, _(TEXT_(T_BYTES), term));
+		add_to_str(&a, &l, cast_uchar ", ");
+		add_unsigned_long_num_to_str(&a, &l, imgcache_info(CI_FILES));
+		add_to_str(&a, &l, cast_uchar " ");
+		add_to_str(&a, &l, _(TEXT_(T_IMAGES), term));
+		add_to_str(&a, &l, cast_uchar ", ");
+		add_unsigned_long_num_to_str(&a, &l, imgcache_info(CI_LOCKED));
+		add_to_str(&a, &l, cast_uchar " ");
+		add_to_str(&a, &l, _(TEXT_(T_LOCKED), term));
+		add_to_str(&a, &l, cast_uchar ".\n");
 		
-		l = 0, b15 = init_str(); 
-		add_to_str(&b15, &l, ", ");
-		add_num_to_str(&b15, &l, imgcache_info(CI_FILES));
-		add_to_str(&b15, &l, " ");
-		
-		l = 0, b16 = init_str(); 
-		add_to_str(&b16, &l, ", ");
-		add_num_to_str(&b16, &l, imgcache_info(CI_LOCKED));
-		add_to_str(&b16, &l, " ");
-		
-		l = 0, b17 = init_str();
-		add_to_str(&b17, &l, ".\n");
-		
-		l = 0, c14 = init_str();
-		add_to_str(&c14, &l, ", ");
-		add_num_to_str(&c14, &l, font_cache.bytes);
-		add_to_str(&c14, &l, " ");
-		
-		l = 0, c15 = init_str(); 
-		add_to_str(&c15, &l, ", ");
-		add_num_to_str(&c15, &l, font_cache.max_bytes);
-		add_to_str(&c15, &l, " ");
-		
-		l = 0, c16 = init_str(); 
-		add_to_str(&c16, &l, ", ");
-		add_num_to_str(&c16, &l, font_cache.items);
-		add_to_str(&c16, &l, " ");
-		
-		l = 0, c17 = init_str();
-		add_to_str(&c17, &l, ".\n");
+		add_to_str(&a, &l, _(TEXT_(T_FONT_CACHE), term));
+		add_to_str(&a, &l, cast_uchar ": ");
+		add_unsigned_long_num_to_str(&a, &l, fontcache_info(CI_BYTES));
+		add_to_str(&a, &l, cast_uchar " ");
+		add_to_str(&a, &l, _(TEXT_(T_BYTES), term));
+		add_to_str(&a, &l, cast_uchar ", ");
+		add_unsigned_long_num_to_str(&a, &l, fontcache_info(CI_FILES));
+		add_to_str(&a, &l, cast_uchar " ");
+		add_to_str(&a, &l, _(TEXT_(T_LETTERS), term));
+		add_to_str(&a, &l, cast_uchar ".\n");
 	}
 #endif
 
-	l = 0, a14 = init_str(); add_to_str(&a14, &l, ": "); add_num_to_str(&a14, &l, formatted_info(CI_FILES));add_to_str(&a14, &l, " ");
-	l = 0, a15 = init_str(); add_to_str(&a15, &l, ", "); add_num_to_str(&a15, &l, formatted_info(CI_LOCKED));add_to_str(&a15, &l, " ");
-	l = 0, a16 = init_str(); add_to_str(&a16, &l, ".");
+	add_to_str(&a, &l, _(TEXT_(T_FORMATTED_DOCUMENT_CACHE), term));
+	add_to_str(&a, &l, cast_uchar ": ");
+	add_unsigned_long_num_to_str(&a, &l, formatted_info(CI_FILES));
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_DOCUMENTS), term));
+	add_to_str(&a, &l, cast_uchar ", ");
+	add_unsigned_long_num_to_str(&a, &l, formatted_info(CI_LOCKED));
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_LOCKED), term));
+	add_to_str(&a, &l, cast_uchar ".\n");
 
-	if (!F) msg_box(term, getml(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, NULL), TEXT_(T_RESOURCES), AL_LEFT | AL_EXTD_TEXT, TEXT_(T_RESOURCES), a1, TEXT_(T_HANDLES), a2, TEXT_(T_TIMERS), a3, TEXT_(T_CONNECTIONS), a4, TEXT_(T_cONNECTIONS), a5, TEXT_(T_CONNECTING), a6, TEXT_(T_tRANSFERRING), a7, TEXT_(T_KEEPALIVE), a8, TEXT_(T_MEMORY_CACHE), a9, TEXT_(T_BYTES), a10, TEXT_(T_FILES), a11, TEXT_(T_LOCKED), a12, TEXT_(T_LOADING), a13, TEXT_(T_FORMATTED_DOCUMENT_CACHE), a14, TEXT_(T_DOCUMENTS), a15, TEXT_(T_LOCKED), a16, NULL, r, 1, TEXT_(T_OK), NULL, B_ENTER | B_ESC);
-#ifdef G
-	else msg_box(term, getml(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11,
-				a12, a13, b14, b15, b16, b17, a14, a15, a16,
-				c14, c15, c16, c17, NULL), TEXT_(T_RESOURCES),
-			AL_LEFT | AL_EXTD_TEXT, TEXT_(T_RESOURCES), a1,
-			TEXT_(T_HANDLES), a2, TEXT_(T_TIMERS), a3,
-			TEXT_(T_CONNECTIONS), a4, TEXT_(T_cONNECTIONS), a5,
-			TEXT_(T_CONNECTING), a6, TEXT_(T_tRANSFERRING), a7,
-			TEXT_(T_KEEPALIVE), a8, TEXT_(T_MEMORY_CACHE), a9,
-			TEXT_(T_BYTES), a10, TEXT_(T_FILES), a11, TEXT_(T_LOCKED),
-			a12, TEXT_(T_LOADING), a13, TEXT_(T_IMAGE_CACHE), b14,
-			TEXT_(T_BYTES), b15, TEXT_(T_IMAGES), b16, TEXT_(T_LOCKED),
-			b17, TEXT_(T_FONT_CACHE), c14, TEXT_(T_BYTES), c15,
-			TEXT_(T_BYTES_MAX), c16, TEXT_(T_LETTERS), c17,
-			TEXT_(T_FORMATTED_DOCUMENT_CACHE), a14, TEXT_(T_DOCUMENTS), a15, TEXT_(T_LOCKED), a16, NULL, r, 1, TEXT_(T_OK), NULL, B_ENTER | B_ESC);
-#endif
+	add_to_str(&a, &l, _(TEXT_(T_DNS_CACHE), term));
+	add_to_str(&a, &l, cast_uchar ": ");
+	add_unsigned_long_num_to_str(&a, &l, dns_info(CI_FILES));
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_SERVERS), term));
+	add_to_str(&a, &l, cast_uchar ".");
+
+	if (r2 && !strcmp(cast_const_char a, cast_const_char *(unsigned char **)((struct dialog_data *)r2->win->data)->dlg->udata)) {
+		mem_free(a);
+		mem_free(r);
+		r2->timer = install_timer(RESOURCE_INFO_REFRESH, (void (*)(void *))refresh, r2);
+		return 1;
+	}
+
+	msg_box(term, getml(a, NULL), TEXT_(T_RESOURCES), AL_LEFT, a, r, 1, TEXT_(T_OK), NULL, B_ENTER | B_ESC);
 	r->win = term->windows.next;
 	((struct dialog_data *)r->win->data)->dlg->abort = refresh_abort;
 	r->timer = install_timer(RESOURCE_INFO_REFRESH, (void (*)(void *))refresh, r);
+	return 0;
 }
 
-#if 0
-
-static void list_cache(struct terminal *term, void *d, struct session *ses)
+static void resource_info_menu(struct terminal *term, void *d, struct session *ses)
 {
-	unsigned char *a;
-	int l = 0;
-	struct refresh *r;
-	struct cache_entry *ce, *cache;
-	a = init_str();
-	r = mem_alloc(sizeof(struct refresh));
-	r->term = term;
-	r->win = NULL;
-	r->ses = ses;
-	r->fn = list_cache;
-	r->data = d;
-	r->timer = -1;
-	cache = (struct cache_entry *)cache_info(CI_LIST);
-	add_to_str(&a, &l, ":");
-	foreach(ce, *cache) {
-		add_to_str(&a, &l, "\n");
-		add_to_str(&a, &l, ce->url);
-	}
-	msg_box(term, getml(a, NULL), TEXT_(T_CACHE_INFO), AL_LEFT | AL_EXTD_TEXT, TEXT_(T_CACHE_CONTENT), a, NULL, r, 1, TEXT_(T_OK), end_refresh, B_ENTER | B_ESC);
-	r->win = term->windows.next;
-	r->timer = install_timer(RESOURCE_INFO_REFRESH, (void (*)(void *))refresh, r);
-	/* !!! the refresh here is buggy */
+	resource_info(term, NULL);
 }
-
-#endif
 
 #ifdef LEAK_DEBUG
 
-#define MSG_BUF	2000
-
-static void memory_info(struct terminal *term, void *d, struct session *ses)
+static int memory_info(struct terminal *term, struct refresh *r2)
 {
-	unsigned char message[MSG_BUF];
-	unsigned char *p;
+	unsigned char *a;
+	int l;
 	struct refresh *r;
+
 	r = mem_alloc(sizeof(struct refresh));
 	r->term = term;
 	r->win = NULL;
-	r->ses = ses;
 	r->fn = memory_info;
-	r->data = d;
 	r->timer = -1;
-	p = message;
-	sprintf(p, "%ld %s", mem_amount, _(TEXT_(T_MEMORY_ALLOCATED), term)), p += strlen(p);
-	sprintf(p, "."), p += strlen(p);
-#ifdef JS
-	sprintf(p, "\n%ld %s.", js_zaflaknuto_pameti, _(TEXT_(T_JS_MEMORY_ALLOCATED), term)), p += strlen(p);
+	l = 0;
+	a = init_str();
+
+	add_unsigned_long_num_to_str(&a, &l, mem_amount);
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_MEMORY_ALLOCATED), term));
+	add_to_str(&a, &l, cast_uchar ", ");
+	add_unsigned_long_num_to_str(&a, &l, mem_blocks);
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_BLOCKS_ALLOCATED), term));
+	add_to_str(&a, &l, cast_uchar ".");
+
+#ifdef MEMORY_REQUESTED
+	if (mem_requested && blocks_requested) {
+		add_to_str(&a, &l, cast_uchar "\n");
+		add_unsigned_long_num_to_str(&a, &l, mem_requested);
+		add_to_str(&a, &l, cast_uchar " ");
+		add_to_str(&a, &l, _(TEXT_(T_MEMORY_REQUESTED), term));
+		add_to_str(&a, &l, cast_uchar ", ");
+		add_unsigned_long_num_to_str(&a, &l, blocks_requested);
+		add_to_str(&a, &l, cast_uchar " ");
+		add_to_str(&a, &l, _(TEXT_(T_BLOCKS_REQUESTED), term));
+		add_to_str(&a, &l, cast_uchar ".");
+	}
 #endif
-	p = stracpy(message);
-	msg_box(term, getml(p, NULL), TEXT_(T_MEMORY_INFO), AL_CENTER, p, r, 1, TEXT_(T_OK), NULL, B_ENTER | B_ESC);
+#ifdef JS
+	add_to_str(&a, &l, cast_uchar "\n");
+	add_unsigned_long_num_to_str(&a, &l, js_zaflaknuto_pameti);
+	add_to_str(&a, &l, cast_uchar " ");
+	add_to_str(&a, &l, _(TEXT_(T_JS_MEMORY_ALLOCATED), term));
+	add_to_str(&a, &l, cast_uchar ".");
+#endif
+
+	if (r2 && !strcmp(cast_const_char a, cast_const_char *(unsigned char **)((struct dialog_data *)r2->win->data)->dlg->udata)) {
+		mem_free(a);
+		mem_free(r);
+		r2->timer = install_timer(RESOURCE_INFO_REFRESH, (void (*)(void *))refresh, r2);
+		return 1;
+	}
+
+	
+	msg_box(term, getml(a, NULL), TEXT_(T_MEMORY_INFO), AL_CENTER, a, r, 1, TEXT_(T_OK), NULL, B_ENTER | B_ESC);
 	r->win = term->windows.next;
 	((struct dialog_data *)r->win->data)->dlg->abort = refresh_abort;
 	r->timer = install_timer(RESOURCE_INFO_REFRESH, (void (*)(void *))refresh, r);
+	return 0;
+}
+
+static void memory_info_menu(struct terminal *term, void *d, struct session *ses)
+{
+	memory_info(term, NULL);
 }
 
 #endif
 
 static void flush_caches(struct terminal *term, void *d, void *e)
 {
-	shrink_memory(SH_FREE_ALL);
+	abort_background_connections();
+	shrink_memory(SH_FREE_ALL, 0);
 }
 
-/* jde v historii o psteps polozek dozadu */
-void go_backwards(struct terminal *term, void *psteps, struct session *ses)
+/* jde v historii na polozku id_ptr */
+void go_backwards(struct terminal *term, void *id_ptr, struct session *ses)
 {
-	long steps = (my_intptr_t) psteps;
-
-	/*if (ses->tq_goto_position)
-		--steps;
-	if (ses->search_word)
-		mem_free(ses->search_word), ses->search_word = NULL;*/
-
-	while (steps > 1) {
-		struct location *loc = ses->history.next;
-		if ((void *) loc == &ses->history) return;
-		loc = loc->next;
-		if ((void *) loc == &ses->history) return;
-		destroy_location(loc);
-
-		--steps;
+	unsigned want_id = (my_intptr_t)id_ptr;
+	struct location *l;
+	int n = 0;
+	foreach(l, ses->history) {
+		if (l->location_id == want_id) {
+			goto have_it;
+		}
+		n++;
 	}
+	n = -1;
+	foreach(l, ses->forward_history) {
+		if (l->location_id == want_id) {
+			goto have_it;
+		}
+		n--;
+	}
+	return;
 
-	if (steps)
-		go_back(ses);
+	have_it:
+	go_back(ses, n);
 }
 
 static struct menu_item no_hist_menu[] = {
-	{ TEXT_(T_NO_HISTORY), "", M_BAR, NULL, NULL, 0, 0 },
+	{ TEXT_(T_NO_HISTORY), cast_uchar "", M_BAR, NULL, NULL, 0, 0 },
 	{ NULL, NULL, 0, NULL, NULL, 0, 0 }
 };
+
+static void add_history_menu_entry(struct menu_item **mi, int *n, struct location *l)
+{
+	unsigned char *url, *pc;
+	if (!*mi) *mi = new_menu(3);
+	url = stracpy(l->url);
+	if ((pc = cast_uchar strchr(cast_const_char url, POST_CHAR))) *pc = 0;
+	add_to_menu(mi, url, cast_uchar "", cast_uchar "", MENU_FUNC go_backwards, (void *)(my_intptr_t)l->location_id, 0, *n);
+	(*n)++;
+	if (*n == MAXINT) overalloc();
+}
 
 static void history_menu(struct terminal *term, void *ddd, struct session *ses)
 {
 	struct location *l;
 	struct menu_item *mi = NULL;
-	long n = 0;
-	foreach(l, ses->history) {
-		if (n) {
-			unsigned char *url;
-			if (!mi && !(mi = new_menu(3))) return;
-			url = stracpy(l->url);
-			if (strchr(url, POST_CHAR)) *strchr(url, POST_CHAR) = 0;
-			add_to_menu(&mi, url, "", "", MENU_FUNC go_backwards, (void *) n, 0, n - 1);
-		}
-		n++;
+	int n = 0;
+	int selected = 0;
+	foreachback(l, ses->forward_history) {
+		add_history_menu_entry(&mi, &n, l);
 	}
-	if (n <= 1) do_menu(term, no_hist_menu, ses);
-	else do_menu(term, mi, ses);
+	selected = n;
+	foreach(l, ses->history) {
+		add_history_menu_entry(&mi, &n, l);
+	}
+	if (!mi) do_menu(term, no_hist_menu, ses);
+	else do_menu_selected(term, mi, ses, selected);
 }
 
 static struct menu_item no_downloads_menu[] = {
-	{ TEXT_(T_NO_DOWNLOADS), "", M_BAR, NULL, NULL, 0, 0 },
+	{ TEXT_(T_NO_DOWNLOADS), cast_uchar "", M_BAR, NULL, NULL, 0, 0 },
 	{ NULL, NULL, 0, NULL, NULL, 0, 0 }
 };
 
@@ -362,11 +595,19 @@ static void downloads_menu(struct terminal *term, void *ddd, struct session *ses
 	struct menu_item *mi = NULL;
 	int n = 0;
 	foreachback(d, downloads) {
-		unsigned char *u;
-		if (!mi) if (!(mi = new_menu(3))) return;
-		u = stracpy(d->url);
-		if (strchr(u, POST_CHAR)) *strchr(u, POST_CHAR) = 0;
-		add_to_menu(&mi, u, "", "", MENU_FUNC display_download, d, 0, n);
+		unsigned char *f, *ff;
+		if (!mi) mi = new_menu(7);
+		f = !d->prog ? d->orig_file : d->url;
+		for (ff = f; *ff; ff++)
+			if ((dir_sep(ff[0])
+#if defined(DOS_FS) || defined(SPAD)
+			  || (!d->prog && ff[0] == ':')
+#endif
+			  ) && ff[1])
+				f = ff + 1;
+		f = stracpy(f);
+		if (d->prog) if ((ff = cast_uchar strchr(cast_const_char f, POST_CHAR))) *ff = 0;
+		add_to_menu(&mi, f, download_percentage(d, 0), cast_uchar "", MENU_FUNC display_download, d, 0, n);
 		n++;
 	}
 	if (!n) do_menu(term, no_downloads_menu, ses);
@@ -396,26 +637,17 @@ static void display_codepage(struct terminal *term, void *pcp, struct session *s
 	cls_redraw_all_terminals();
 }
 
-#if 0
-static void assumed_codepage(struct terminal *term, void *pcp, struct session *ses)
-{
-	long cp = (my_intptr_t)pcp;
-	ses->ds.assume_cp = cp;
-	redraw_terminal_cls(term);
-}
-#endif
-
 static void charset_list(struct terminal *term, void *xxx, struct session *ses)
 {
 	long i; int sel;
 	unsigned char *n;
 	struct menu_item *mi;
-	if (!(mi = new_menu(1))) return;
+	mi = new_menu(1);
 	for (i = 0; (n = get_cp_name(i)); i++) {
 #ifndef ENABLE_UTF8
-		if (is_cp_special(i)) continue;
+		if (i == utf8_table) continue;
 #endif
-		add_to_menu(&mi, get_cp_name(i), "", "", MENU_FUNC display_codepage, (void *)i, 0, i);
+		add_to_menu(&mi, get_cp_name(i), cast_uchar "", cast_uchar "", MENU_FUNC display_codepage, (void *)i, 0, i);
 	}
 	sel = ses->term->spec->charset;
 	if (sel < 0) sel = 0;
@@ -427,15 +659,14 @@ static void set_val(struct terminal *term, void *ip, int *d)
 	*d = (my_intptr_t)ip;
 }
 
-static void charset_sel_list(struct terminal *term, struct session *ses, int *ptr, int noutf8)
+static void charset_sel_list(struct terminal *term, struct session *ses, int *ptr)
 {
 	long i; int sel;
 	unsigned char *n;
 	struct menu_item *mi;
-	if (!(mi = new_menu(1))) return;
+	mi = new_menu(1);
 	for (i = 0; (n = get_cp_name(i)); i++) {
-		if (noutf8 && is_cp_special(i)) continue;
-		add_to_menu(&mi, get_cp_name(i), "", "", MENU_FUNC set_val, (void *)i, 0, i);
+		add_to_menu(&mi, get_cp_name(i), cast_uchar "", cast_uchar "", MENU_FUNC set_val, (void *)i, 0, i);
 	}
 	sel = *ptr;
 	if (sel < 0) sel = 0;
@@ -554,8 +785,8 @@ static void refresh_javascript(struct session *ses)
 		quiet_kill_js_recursively(ses->screen);
 	}
 
-	js_fun_depth=strtol(js_fun_depth_str,0,10);
-	js_memory_limit=strtol(js_memory_limit_str,0,10);
+	js_fun_depth=strtol(cast_const_char js_fun_depth_str,0,10);
+	js_memory_limit=strtol(cast_const_char js_memory_limit_str,0,10);
 
 	/* reparse document (muze se zmenit hodne veci) */
 	html_interpret_recursive(ses->screen);
@@ -567,9 +798,9 @@ static void javascript_options(struct terminal *term, void *xxx, struct session 
 {
 	struct dialog *d;
 	kill_script_opt=0;
-	snprintf(js_fun_depth_str,7,"%d",js_fun_depth);
-	snprintf(js_memory_limit_str,7,"%d",js_memory_limit);
-	d = mem_calloc(sizeof(struct dialog) + 12 * sizeof(struct dialog_item));
+	snprintf(cast_char js_fun_depth_str,7,"%d",js_fun_depth);
+	snprintf(cast_char js_memory_limit_str,7,"%d",js_memory_limit);
+	d = mem_calloc(sizeof(struct dialog) + 11 * sizeof(struct dialog_item));
 	d->title = TEXT_(T_JAVASCRIPT_OPTIONS);
 	d->fn = group_fn;
 	d->refresh = (void (*)(void *))refresh_javascript;
@@ -629,7 +860,63 @@ static void javascript_options(struct terminal *term, void *xxx, struct session 
 
 #endif
 
-static unsigned char *http_labels[] = { TEXT_(T_USE_HTTP_10), TEXT_(T_ALLOW_SERVER_BLACKLIST), TEXT_(T_BROKEN_302_REDIRECT), TEXT_(T_NO_KEEPALIVE_AFTER_POST_REQUEST), TEXT_(T_DO_NOT_SEND_ACCEPT_CHARSET), TEXT_(T_DO_NOT_ADVERTISE_COMPRESSION_SUPPORT), TEXT_(T_RETRY_ON_INTERNAL_ERRORS), NULL };
+#ifdef SUPPORT_IPV6
+
+static unsigned char *ipv6_labels[] = { TEXT_(T_IPV6_DEFAULT), TEXT_(T_IPV6_PREFER_IPV4), TEXT_(T_IPV6_PREFER_IPV6), TEXT_(T_IPV6_USE_ONLY_IPV4), TEXT_(T_IPV6_USE_ONLY_IPV6), NULL };
+
+static int dlg_ipv6_options(struct dialog_data *dlg, struct dialog_item_data *di)
+{
+	struct ipv6_options *i6o = (struct ipv6_options *)di->cdata;
+	struct dialog *d;
+	d = mem_calloc(sizeof(struct dialog) + 7 * sizeof(struct dialog_item));
+	d->title = TEXT_(T_IPV6_OPTIONS);
+	d->fn = checkbox_list_fn;
+	d->udata = ipv6_labels;
+	d->items[0].type = D_CHECKBOX;
+	d->items[0].gid = 1;
+	d->items[0].gnum = ADDR_PREFERENCE_DEFAULT;
+	d->items[0].dlen = sizeof(int);
+	d->items[0].data = (void *)&i6o->addr_preference;
+	d->items[1].type = D_CHECKBOX;
+	d->items[1].gid = 1;
+	d->items[1].gnum = ADDR_PREFERENCE_IPV4;
+	d->items[1].dlen = sizeof(int);
+	d->items[1].data = (void *)&i6o->addr_preference;
+	d->items[2].type = D_CHECKBOX;
+	d->items[2].gid = 1;
+	d->items[2].gnum = ADDR_PREFERENCE_IPV6;
+	d->items[2].dlen = sizeof(int);
+	d->items[2].data = (void *)&i6o->addr_preference;
+	d->items[3].type = D_CHECKBOX;
+	d->items[3].gid = 1;
+	d->items[3].gnum = ADDR_PREFERENCE_IPV4_ONLY;
+	d->items[3].dlen = sizeof(int);
+	d->items[3].data = (void *)&i6o->addr_preference;
+	d->items[4].type = D_CHECKBOX;
+	d->items[4].gid = 1;
+	d->items[4].gnum = ADDR_PREFERENCE_IPV6_ONLY;
+	d->items[4].dlen = sizeof(int);
+	d->items[4].data = (void *)&i6o->addr_preference;
+	d->items[5].type = D_BUTTON;
+	d->items[5].gid = B_ENTER;
+	d->items[5].fn = ok_dialog;
+	d->items[5].text = TEXT_(T_OK);
+	d->items[6].type = D_BUTTON;
+	d->items[6].gid = B_ESC;
+	d->items[6].fn = cancel_dialog;
+	d->items[6].text = TEXT_(T_CANCEL);
+	d->items[7].type = D_END;
+	do_dialog(dlg->win->term, d, getml(d, NULL));
+	return 0;
+}
+
+#endif
+
+static unsigned char *http_labels[] = { TEXT_(T_USE_HTTP_10), TEXT_(T_ALLOW_SERVER_BLACKLIST), TEXT_(T_BROKEN_302_REDIRECT), TEXT_(T_NO_KEEPALIVE_AFTER_POST_REQUEST), TEXT_(T_DO_NOT_SEND_ACCEPT_CHARSET),
+#ifdef HAVE_ANY_COMPRESSION
+	TEXT_(T_DO_NOT_ADVERTISE_COMPRESSION_SUPPORT),
+#endif
+	TEXT_(T_RETRY_ON_INTERNAL_ERRORS), NULL };
 
 static unsigned char *http_header_labels[] = { TEXT_(T_REFERER_NONE), TEXT_(T_REFERER_SAME_URL), TEXT_(T_REFERER_FAKE), TEXT_(T_REFERER_REAL_SAME_SERVER), TEXT_(T_REFERER_REAL), TEXT_(T_FAKE_REFERER), TEXT_(T_FAKE_USERAGENT), TEXT_(T_EXTRA_HEADER), NULL };
 
@@ -658,7 +945,9 @@ static void httpheadopt_fn(struct dialog_data *dlg)
 	dlg_format_checkboxes(dlg, NULL, dlg->items, dlg->n - 5, 0, &y, w, &rw, dlg->dlg->udata);
 	y += gf_val(1, 1 * G_BFU_FONT_SIZE);
 	dlg_format_text_and_field(dlg, NULL, http_header_labels[dlg->n - 5], dlg->items + dlg->n - 5, 0, &y, w, &rw, COLOR_DIALOG_TEXT, AL_LEFT);
+	if (!dlg->win->term->spec->braille) y += gf_val(1, G_BFU_FONT_SIZE * 1);
 	dlg_format_text_and_field(dlg, NULL, http_header_labels[dlg->n - 4], dlg->items + dlg->n - 4, 0, &y, w, &rw, COLOR_DIALOG_TEXT, AL_LEFT);
+	if (!dlg->win->term->spec->braille) y += gf_val(1, G_BFU_FONT_SIZE * 1);
 	dlg_format_text_and_field(dlg, NULL, http_header_labels[dlg->n - 3], dlg->items + dlg->n - 3, 0, &y, w, &rw, COLOR_DIALOG_TEXT, AL_LEFT);
 	y += gf_val(1, 1 * G_BFU_FONT_SIZE);
 	dlg_format_buttons(dlg, NULL, dlg->items + dlg->n - 2, 2, 0, &y, w, &rw, AL_CENTER);
@@ -671,7 +960,9 @@ static void httpheadopt_fn(struct dialog_data *dlg)
 	dlg_format_checkboxes(dlg, term, dlg->items, dlg->n - 5, dlg->x + DIALOG_LB, &y, w, NULL, dlg->dlg->udata);
 	y += gf_val(1, G_BFU_FONT_SIZE);
 	dlg_format_text_and_field(dlg, term, http_header_labels[dlg->n - 5], dlg->items + dlg->n - 5, dlg->x + DIALOG_LB, &y, w, NULL, COLOR_DIALOG_TEXT, AL_LEFT);
+	if (!dlg->win->term->spec->braille) y += gf_val(1, G_BFU_FONT_SIZE * 1);
 	dlg_format_text_and_field(dlg, term, http_header_labels[dlg->n - 4], dlg->items + dlg->n - 4, dlg->x + DIALOG_LB, &y, w, NULL, COLOR_DIALOG_TEXT, AL_LEFT);
+	if (!dlg->win->term->spec->braille) y += gf_val(1, G_BFU_FONT_SIZE * 1);
 	dlg_format_text_and_field(dlg, term, http_header_labels[dlg->n - 3], dlg->items + dlg->n - 3, dlg->x + DIALOG_LB, &y, w, NULL, COLOR_DIALOG_TEXT, AL_LEFT);
 	y += gf_val(1, G_BFU_FONT_SIZE);
 	dlg_format_buttons(dlg, term, dlg->items + dlg->n - 2, 2, dlg->x + DIALOG_LB, &y, w, &rw, AL_CENTER);
@@ -681,7 +972,7 @@ static int dlg_http_header_options(struct dialog_data *dlg, struct dialog_item_d
 {
 	struct http_header_options *header = (struct http_header_options *)di->cdata;
 	struct dialog *d;
-	d = mem_calloc(sizeof(struct dialog) + 11 * sizeof(struct dialog_item));
+	d = mem_calloc(sizeof(struct dialog) + 10 * sizeof(struct dialog_item));
 	d->title = TEXT_(T_HTTP_HEADER_OPTIONS);
 	d->fn = httpheadopt_fn;
 	d->udata = http_header_labels;
@@ -738,58 +1029,72 @@ static int dlg_http_options(struct dialog_data *dlg, struct dialog_item_data *di
 {
 	struct http_options *options = (struct http_options *)di->cdata;
 	struct dialog *d;
-	d = mem_calloc(sizeof(struct dialog) + 11 * sizeof(struct dialog_item));
+	int a = 0;
+	d = mem_calloc(sizeof(struct dialog) + 10 * sizeof(struct dialog_item));
 	d->title = TEXT_(T_HTTP_BUG_WORKAROUNDS);
 	d->fn = checkbox_list_fn;
 	d->udata = http_labels;
-	d->items[0].type = D_CHECKBOX;
-	d->items[0].gid = 0;
-	d->items[0].dlen = sizeof(int);
-	d->items[0].data = (void *)&options->http10;
-	d->items[1].type = D_CHECKBOX;
-	d->items[1].gid = 0;
-	d->items[1].dlen = sizeof(int);
-	d->items[1].data = (void *)&options->allow_blacklist;
-	d->items[2].type = D_CHECKBOX;
-	d->items[2].gid = 0;
-	d->items[2].dlen = sizeof(int);
-	d->items[2].data = (void *)&options->bug_302_redirect;
-	d->items[3].type = D_CHECKBOX;
-	d->items[3].gid = 0;
-	d->items[3].dlen = sizeof(int);
-	d->items[3].data = (void *)&options->bug_post_no_keepalive;
-	d->items[4].type = D_CHECKBOX;
-	d->items[4].gid = 0;
-	d->items[4].dlen = sizeof(int);
-	d->items[4].data = (void *)&options->no_accept_charset;
-	d->items[5].type = D_CHECKBOX;
-	d->items[5].gid = 0;
-	d->items[5].dlen = sizeof(int);
-	d->items[5].data = (void *)&options->no_compression;
-	d->items[6].type = D_CHECKBOX;
-	d->items[6].gid = 0;
-	d->items[6].dlen = sizeof(int);
-	d->items[6].data = (void *)&options->retry_internal_errors;
-	d->items[7].type = D_BUTTON;
-	d->items[7].gid = 0;
-	d->items[7].fn = dlg_http_header_options;
-	d->items[7].text = TEXT_(T_HEADER_OPTIONS);
-	d->items[7].data = (void *)&options->header;
-	d->items[7].dlen = sizeof(struct http_header_options);
-	d->items[8].type = D_BUTTON;
-	d->items[8].gid = B_ENTER;
-	d->items[8].fn = ok_dialog;
-	d->items[8].text = TEXT_(T_OK);
-	d->items[9].type = D_BUTTON;
-	d->items[9].gid = B_ESC;
-	d->items[9].fn = cancel_dialog;
-	d->items[9].text = TEXT_(T_CANCEL);
-	d->items[10].type = D_END;
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].gid = 0;
+	d->items[a].dlen = sizeof(int);
+	d->items[a].data = (void *)&options->http10;
+	a++;
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].gid = 0;
+	d->items[a].dlen = sizeof(int);
+	d->items[a].data = (void *)&options->allow_blacklist;
+	a++;
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].gid = 0;
+	d->items[a].dlen = sizeof(int);
+	d->items[a].data = (void *)&options->bug_302_redirect;
+	a++;
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].gid = 0;
+	d->items[a].dlen = sizeof(int);
+	d->items[a].data = (void *)&options->bug_post_no_keepalive;
+	a++;
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].gid = 0;
+	d->items[a].dlen = sizeof(int);
+	d->items[a].data = (void *)&options->no_accept_charset;
+	a++;
+#ifdef HAVE_ANY_COMPRESSION
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].gid = 0;
+	d->items[a].dlen = sizeof(int);
+	d->items[a].data = (void *)&options->no_compression;
+	a++;
+#endif
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].gid = 0;
+	d->items[a].dlen = sizeof(int);
+	d->items[a].data = (void *)&options->retry_internal_errors;
+	a++;
+	d->items[a].type = D_BUTTON;
+	d->items[a].gid = 0;
+	d->items[a].fn = dlg_http_header_options;
+	d->items[a].text = TEXT_(T_HEADER_OPTIONS);
+	d->items[a].data = (void *)&options->header;
+	d->items[a].dlen = sizeof(struct http_header_options);
+	a++;
+	d->items[a].type = D_BUTTON;
+	d->items[a].gid = B_ENTER;
+	d->items[a].fn = ok_dialog;
+	d->items[a].text = TEXT_(T_OK);
+	a++;
+	d->items[a].type = D_BUTTON;
+	d->items[a].gid = B_ESC;
+	d->items[a].fn = cancel_dialog;
+	d->items[a].text = TEXT_(T_CANCEL);
+	a++;
+	d->items[a].type = D_END;
+	a++;
 	do_dialog(dlg->win->term, d, getml(d, NULL));
 	return 0;
 }
 
-static unsigned char *ftp_texts[] = { TEXT_(T_PASSWORD_FOR_ANONYMOUS_LOGIN), TEXT_(T_USE_PASSIVE_FTP), TEXT_(T_USE_FAST_FTP), TEXT_(T_SET_TYPE_OF_SERVICE), NULL };
+static unsigned char *ftp_texts[] = { TEXT_(T_PASSWORD_FOR_ANONYMOUS_LOGIN), TEXT_(T_USE_PASSIVE_FTP), TEXT_(T_USE_EPRT_EPSV), TEXT_(T_USE_FAST_FTP), TEXT_(T_SET_TYPE_OF_SERVICE), NULL };
 
 static void ftpopt_fn(struct dialog_data *dlg)
 {
@@ -834,26 +1139,28 @@ static int dlg_ftp_options(struct dialog_data *dlg, struct dialog_item_data *di)
 	int a;
 	struct ftp_options *ftp_options = (struct ftp_options *)di->cdata;
 	struct dialog *d;
-	d = mem_calloc(sizeof(struct dialog) + 6 * sizeof(struct dialog_item));
+	d = mem_calloc(sizeof(struct dialog) + 7 * sizeof(struct dialog_item));
 	d->title = TEXT_(T_FTP_OPTIONS);
 	d->fn = ftpopt_fn;
-	d->items[0].type = D_FIELD;
-	d->items[0].dlen = MAX_STR_LEN;
-	d->items[0].data = ftp_options->anon_pass;
-	d->items[1].type = D_CHECKBOX;
-	d->items[1].dlen = sizeof(int);
-	d->items[1].data = (void*)&ftp_options->passive_ftp;
-	d->items[1].gid = 0;
-	d->items[2].type = D_CHECKBOX;
-	d->items[2].dlen = sizeof(int);
-	d->items[2].data = (void*)&ftp_options->fast_ftp;
+	a=0;
+	d->items[a].type = D_FIELD;
+	d->items[a].dlen = MAX_STR_LEN;
+	d->items[a++].data = ftp_options->anon_pass;
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].dlen = sizeof(int);
+	d->items[a].data = (void*)&ftp_options->passive_ftp;
+	d->items[a++].gid = 0;
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].dlen = sizeof(int);
+	d->items[a].data = (void*)&ftp_options->eprt_epsv;
+	d->items[a++].gid = 0;
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].dlen = sizeof(int);
+	d->items[a++].data = (void*)&ftp_options->fast_ftp;
 #ifdef HAVE_IPTOS
-	d->items[3].type = D_CHECKBOX;
-	d->items[3].dlen = sizeof(int);
-	d->items[3].data = (void*)&ftp_options->set_tos;
-	a = 4;
-#else
-	a = 3;
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].dlen = sizeof(int);
+	d->items[a++].data = (void*)&ftp_options->set_tos;
 #endif
 	d->items[a].type = D_BUTTON;
 	d->items[a].gid = B_ENTER;
@@ -878,24 +1185,19 @@ static unsigned char disp_green_g[VO_GAMMA_LEN];
 static unsigned char disp_blue_g[VO_GAMMA_LEN];
 static unsigned char user_g[VO_GAMMA_LEN];
 static unsigned char aspect_str[VO_GAMMA_LEN];
-int gamma_stamp; /* stamp counter for gamma changes */
+tcount gamma_stamp; /* stamp counter for gamma changes */
 
 static void refresh_video(struct session *ses)
 {
-	struct rect r = {0, 0, 0, 0};
-	struct terminal *term;
-
-	display_red_gamma=atof(disp_red_g);
-	display_green_gamma=atof(disp_green_g);
-	display_blue_gamma=atof(disp_blue_g);
-	user_gamma=atof(user_g);
-	bfu_aspect=atof(aspect_str);
+	display_red_gamma=atof(cast_const_char disp_red_g);
+	display_green_gamma=atof(cast_const_char disp_green_g);
+	display_blue_gamma=atof(cast_const_char disp_blue_g);
+	user_gamma=atof(cast_const_char user_g);
+	bfu_aspect=atof(cast_const_char aspect_str);
+	/* Flush font cache */
 	update_aspect();
 	gamma_stamp++;
 	
-	/* Flush font cache */
-	destroy_font_cache();
-
 	/* Flush dip_get_color cache */
 	gamma_cache_rgb = -2;
 
@@ -906,23 +1208,22 @@ static void refresh_video(struct session *ses)
 	init_bfu();
 	init_grview();
 
-	html_interpret_recursive(ses->screen);
-	draw_formatted(ses);
 	/* Redraw all terminals */
-	foreach(term, terminals){
-		memcpy(&r, &term->dev->size, sizeof r);
-		t_redraw(term->dev, &r);
-	}
+	cls_redraw_all_terminals();
 
 }
 
-static unsigned char *video_msg[] = {
-	TEXT_(T_VIDEO_OPTIONS_TEXT),
+#define video_msg_0	TEXT_(T_VIDEO_OPTIONS_TEXT)
+
+static unsigned char *video_msg_1[] = {
 	TEXT_(T_RED_DISPLAY_GAMMA),
 	TEXT_(T_GREEN_DISPLAY_GAMMA),
 	TEXT_(T_BLUE_DISPLAY_GAMMA),
 	TEXT_(T_USER_GAMMA),
 	TEXT_(T_ASPECT_RATIO),
+};
+
+static unsigned char *video_msg_2[] = {
 	TEXT_(T_ASPECT_CORRECTION_ON),
 	TEXT_(T_DISPLAY_OPTIMIZATION_CRT),
 	TEXT_(T_DISPLAY_OPTIMIZATION_LCD_RGB),
@@ -932,6 +1233,7 @@ static unsigned char *video_msg[] = {
 	TEXT_(T_8_BIT_GAMMA_CORRECTION),
 	TEXT_(T_16_BIT_GAMMA_CORRECTION),
 	TEXT_(T_AUTO_GAMMA_CORRECTION),
+	TEXT_(T_OVERWRITE_SCREEN_INSTEAD_OF_SCROLLING_IT),
 };
 
 static void videoopt_fn(struct dialog_data *dlg)
@@ -940,43 +1242,45 @@ static void videoopt_fn(struct dialog_data *dlg)
 	int max = 0, min = 0;
 	int w, rw;
 	int y = gf_val(-1, -G_BFU_FONT_SIZE);
-	max_text_width(term, video_msg[0], &max, AL_LEFT);
-	min_text_width(term, video_msg[0], &min, AL_LEFT);
-	max_group_width(term, video_msg + 1, dlg->items, 14, &max);
-	min_group_width(term, video_msg + 1, dlg->items, 14, &min);
-	max_buttons_width(term, dlg->items + 14, 2, &max);
-	min_buttons_width(term, dlg->items + 14, 2, &min);
+	max_text_width(term, video_msg_0, &max, AL_LEFT);
+	min_text_width(term, video_msg_0, &min, AL_LEFT);
+	max_group_width(term, video_msg_1, dlg->items, 5, &max);
+	min_group_width(term, video_msg_1, dlg->items, 5, &min);
+	checkboxes_width(term, video_msg_2, dlg->n-2-5, &max, max_text_width);
+	checkboxes_width(term, video_msg_2, dlg->n-2-5, &min, min_text_width);
+	max_buttons_width(term, dlg->items + dlg->n-2, 2, &max);
+	min_buttons_width(term, dlg->items + dlg->n-2, 2, &min);
 	w = dlg->win->term->x * 9 / 10 - 2 * DIALOG_LB;
 	if (w > max) w = max;
 	if (w < min) w = min;
 	if (w > dlg->win->term->x - 2 * DIALOG_LB) w = dlg->win->term->x - 2 * DIALOG_LB;
 	if (w < 1) w = 1;
 	rw = 0;
-	dlg_format_text(dlg, NULL, video_msg[0], 0, &y, w, &rw, COLOR_DIALOG_TEXT, AL_LEFT);
+	dlg_format_text(dlg, NULL, video_msg_0, 0, &y, w, &rw, COLOR_DIALOG_TEXT, AL_LEFT);
 	y += gf_val(1, G_BFU_FONT_SIZE);
-	dlg_format_group(dlg, NULL, video_msg + 1, dlg->items, 5, 0, &y, w, &rw);
+	dlg_format_group(dlg, NULL, video_msg_1, dlg->items, 5, 0, &y, w, &rw);
 	y += gf_val(1, G_BFU_FONT_SIZE);
-	dlg_format_checkboxes(dlg, NULL, dlg->items+5, 9, dlg->x + DIALOG_LB, &y, w, &rw, video_msg+6);
+	dlg_format_checkboxes(dlg, NULL, dlg->items+5, dlg->n-2-5, dlg->x + DIALOG_LB, &y, w, &rw, video_msg_2);
 	y += gf_val(1, G_BFU_FONT_SIZE);
-	dlg_format_buttons(dlg, NULL, dlg->items + 14, 2, 0, &y, w, &rw, AL_CENTER);
+	dlg_format_buttons(dlg, NULL, dlg->items+dlg->n-2, 2, 0, &y, w, &rw, AL_CENTER);
 	w = rw;
 	dlg->xw = w + 2 * DIALOG_LB;
 	dlg->yw = y + 2 * DIALOG_TB;
 	center_dlg(dlg);
 	draw_dlg(dlg);
 	y = dlg->y + DIALOG_TB;
-	dlg_format_text(dlg, term, video_msg[0], dlg->x + DIALOG_LB, &y, w, NULL, COLOR_DIALOG_TEXT, AL_LEFT);
+	dlg_format_text(dlg, term, video_msg_0, dlg->x + DIALOG_LB, &y, w, NULL, COLOR_DIALOG_TEXT, AL_LEFT);
 	y += gf_val(2, G_BFU_FONT_SIZE);
-	dlg_format_group(dlg, term, video_msg + 1, dlg->items, 5, dlg->x + DIALOG_LB, &y, w, NULL);
+	dlg_format_group(dlg, term, video_msg_1, dlg->items, 5, dlg->x + DIALOG_LB, &y, w, NULL);
 	y += gf_val(1, G_BFU_FONT_SIZE);
-	dlg_format_checkboxes(dlg, term, dlg->items+5, 9, dlg->x + DIALOG_LB, &y, w, NULL, video_msg+6);
+	dlg_format_checkboxes(dlg, term, dlg->items+5, dlg->n-2-5, dlg->x + DIALOG_LB, &y, w, NULL, video_msg_2);
 	y += gf_val(1, G_BFU_FONT_SIZE);
-	dlg_format_buttons(dlg, term, &dlg->items[14], 2, dlg->x + DIALOG_LB, &y, w, NULL, AL_CENTER);
+	dlg_format_buttons(dlg, term, dlg->items+dlg->n-2, 2, dlg->x + DIALOG_LB, &y, w, NULL, AL_CENTER);
 }
 
 static void remove_zeroes(unsigned char *string)
 {
-	int l=strlen(string);
+	int l=strlen(cast_const_char string);
 
 	while(l&&(string[l-1]=='0')){
 		l--;
@@ -987,106 +1291,118 @@ static void remove_zeroes(unsigned char *string)
 static void video_options(struct terminal *term, void *xxx, struct session *ses)
 {
 	struct dialog *d;
-	snprintf(disp_red_g, VO_GAMMA_LEN, "%f", display_red_gamma);
+	int a;
+	snprintf(cast_char disp_red_g, VO_GAMMA_LEN, "%f", display_red_gamma);
 	remove_zeroes(disp_red_g);
-	snprintf(disp_green_g, VO_GAMMA_LEN, "%f", display_green_gamma);
+	snprintf(cast_char disp_green_g, VO_GAMMA_LEN, "%f", display_green_gamma);
 	remove_zeroes(disp_green_g);
-	snprintf(disp_blue_g, VO_GAMMA_LEN, "%f", display_blue_gamma);
+	snprintf(cast_char disp_blue_g, VO_GAMMA_LEN, "%f", display_blue_gamma);
 	remove_zeroes(disp_blue_g);
-	snprintf(user_g, VO_GAMMA_LEN, "%f", user_gamma);
+	snprintf(cast_char user_g, VO_GAMMA_LEN, "%f", user_gamma);
 	remove_zeroes(user_g);
-	snprintf(aspect_str, VO_GAMMA_LEN, "%f", bfu_aspect);
+	snprintf(cast_char aspect_str, VO_GAMMA_LEN, "%f", bfu_aspect);
 	remove_zeroes(aspect_str);
 	d = mem_calloc(sizeof(struct dialog) + 17 * sizeof(struct dialog_item));
 	d->title = TEXT_(T_VIDEO_OPTIONS);
 	d->fn = videoopt_fn;
 	d->refresh = (void (*)(void *))refresh_video;
 	d->refresh_data = ses;
-	d->items[0].type = D_FIELD;
-	d->items[0].dlen = VO_GAMMA_LEN;
-	d->items[0].data = disp_red_g;
-	d->items[0].fn = check_float;
-	d->items[0].gid = 1;
-	d->items[0].gnum = 10000;
-	d->items[1].type = D_FIELD;
-	d->items[1].dlen = VO_GAMMA_LEN;
-	d->items[1].data = disp_green_g;
-	d->items[1].fn = check_float;
-	d->items[1].gid = 1;
-	d->items[1].gnum = 10000;
-	d->items[2].type = D_FIELD;
-	d->items[2].dlen = VO_GAMMA_LEN;
-	d->items[2].data = disp_blue_g;
-	d->items[2].fn = check_float;
-	d->items[2].gid = 1;
-	d->items[2].gnum = 10000;
-	d->items[3].type = D_FIELD;
-	d->items[3].dlen = VO_GAMMA_LEN;
-	d->items[3].data = user_g;
-	d->items[3].fn = check_float;
-	d->items[3].gid = 1;
-	d->items[3].gnum = 10000;
+	a=0;
+	d->items[a].type = D_FIELD;
+	d->items[a].dlen = VO_GAMMA_LEN;
+	d->items[a].data = disp_red_g;
+	d->items[a].fn = check_float;
+	d->items[a].gid = 1;
+	d->items[a++].gnum = 10000;
+	d->items[a].type = D_FIELD;
+	d->items[a].dlen = VO_GAMMA_LEN;
+	d->items[a].data = disp_green_g;
+	d->items[a].fn = check_float;
+	d->items[a].gid = 1;
+	d->items[a++].gnum = 10000;
+	d->items[a].type = D_FIELD;
+	d->items[a].dlen = VO_GAMMA_LEN;
+	d->items[a].data = disp_blue_g;
+	d->items[a].fn = check_float;
+	d->items[a].gid = 1;
+	d->items[a++].gnum = 10000;
+	d->items[a].type = D_FIELD;
+	d->items[a].dlen = VO_GAMMA_LEN;
+	d->items[a].data = user_g;
+	d->items[a].fn = check_float;
+	d->items[a].gid = 1;
+	d->items[a++].gnum = 10000;
 
-	d->items[4].type = D_FIELD;
-	d->items[4].dlen = VO_GAMMA_LEN;
-	d->items[4].data = aspect_str;
-	d->items[4].fn = check_float;
-	d->items[4].gid = 25;
-	d->items[4].gnum = 400;
+	d->items[a].type = D_FIELD;
+	d->items[a].dlen = VO_GAMMA_LEN;
+	d->items[a].data = aspect_str;
+	d->items[a].fn = check_float;
+	d->items[a].gid = 25;
+	d->items[a++].gnum = 400;
 
-	d->items[5].type = D_CHECKBOX;
-	d->items[5].dlen = sizeof(int);
-	d->items[5].data = (void *)&aspect_on;
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].gid = 0;
+	d->items[a].dlen = sizeof(int);
+	d->items[a++].data = (void *)&aspect_on;
 
-	d->items[6].type = D_CHECKBOX;
-	d->items[6].gid = 1;
-	d->items[6].gnum = 0;	/* CRT */
-	d->items[6].dlen = sizeof(int);
-	d->items[6].data = (void *)&display_optimize;
-	d->items[7].type = D_CHECKBOX;
-	d->items[7].gid = 1;
-	d->items[7].gnum = 1;	/* LCD RGB */
-	d->items[7].dlen = sizeof(int);
-	d->items[7].data = (void *)&display_optimize;
-	d->items[8].type = D_CHECKBOX;
-	d->items[8].gid = 1;
-	d->items[8].gnum = 2;	/* LCD BGR*/
-	d->items[8].dlen = sizeof(int);
-	d->items[8].data = (void *)&display_optimize;
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].gid = 1;
+	d->items[a].gnum = 0;	/* CRT */
+	d->items[a].dlen = sizeof(int);
+	d->items[a++].data = (void *)&display_optimize;
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].gid = 1;
+	d->items[a].gnum = 1;	/* LCD RGB */
+	d->items[a].dlen = sizeof(int);
+	d->items[a++].data = (void *)&display_optimize;
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].gid = 1;
+	d->items[a].gnum = 2;	/* LCD BGR*/
+	d->items[a].dlen = sizeof(int);
+	d->items[a++].data = (void *)&display_optimize;
 
 	
-	d->items[9].type = D_CHECKBOX;
-	d->items[9].gid = 0;
-	d->items[9].dlen = sizeof(int);
-	d->items[9].data = (void *)&dither_letters;
-	d->items[10].type = D_CHECKBOX;
-	d->items[10].gid = 0;
-	d->items[10].dlen = sizeof(int);
-	d->items[10].data = (void *)&dither_images;
-	d->items[11].type = D_CHECKBOX;
-	d->items[11].gid = 2;
-	d->items[11].gnum = 0;
-	d->items[11].dlen = sizeof(int);
-	d->items[11].data = (void *)&gamma_bits;
-	d->items[12].type = D_CHECKBOX;
-	d->items[12].gid = 2;
-	d->items[12].gnum = 1;
-	d->items[12].dlen = sizeof(int);
-	d->items[12].data = (void *)&gamma_bits;
-	d->items[13].type = D_CHECKBOX;
-	d->items[13].gid = 2;
-	d->items[13].gnum = 2;
-	d->items[13].dlen = sizeof(int);
-	d->items[13].data = (void *)&gamma_bits;
-	d->items[14].type = D_BUTTON;
-	d->items[14].gid = B_ENTER;
-	d->items[14].fn = ok_dialog;
-	d->items[14].text = TEXT_(T_OK);
-	d->items[15].type = D_BUTTON;
-	d->items[15].gid = B_ESC;
-	d->items[15].fn = cancel_dialog;
-	d->items[15].text = TEXT_(T_CANCEL);
-	d->items[16].type = D_END;
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].gid = 0;
+	d->items[a].dlen = sizeof(int);
+	d->items[a++].data = (void *)&dither_letters;
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].gid = 0;
+	d->items[a].dlen = sizeof(int);
+	d->items[a++].data = (void *)&dither_images;
+	d->items[a].type = D_CHECKBOX;
+
+	d->items[a].gid = 2;
+	d->items[a].gnum = 0;
+	d->items[a].dlen = sizeof(int);
+	d->items[a++].data = (void *)&gamma_bits;
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].gid = 2;
+	d->items[a].gnum = 1;
+	d->items[a].dlen = sizeof(int);
+	d->items[a++].data = (void *)&gamma_bits;
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].gid = 2;
+	d->items[a].gnum = 2;
+	d->items[a].dlen = sizeof(int);
+	d->items[a++].data = (void *)&gamma_bits;
+
+	if (drv->flags & GD_DONT_USE_SCROLL) {
+		d->items[a].type = D_CHECKBOX;
+		d->items[a].gid = 0;
+		d->items[a].dlen = sizeof(int);
+		d->items[a++].data = (void *)&overwrite_instead_of_scroll;
+	}
+
+	d->items[a].type = D_BUTTON;
+	d->items[a].gid = B_ENTER;
+	d->items[a].fn = ok_dialog;
+	d->items[a++].text = TEXT_(T_OK);
+	d->items[a].type = D_BUTTON;
+	d->items[a].gid = B_ESC;
+	d->items[a].fn = cancel_dialog;
+	d->items[a++].text = TEXT_(T_CANCEL);
+	d->items[a].type = D_END;
 	do_dialog(term, d, getml(d, NULL));
 }
 
@@ -1100,41 +1416,45 @@ static unsigned char unrtime_str[5];
 
 static void refresh_net(void *xxx)
 {
-	/*abort_all_connections();*/
-	max_connections = atoi(max_c_str);
-	max_connections_to_host = atoi(max_cth_str);
-	max_tries = atoi(max_t_str);
-	receive_timeout = atoi(time_str);
-	unrestartable_receive_timeout = atoi(unrtime_str);
-	abort_all_keepalive_connections();
+	netcfg_stamp++;
+	max_connections = atoi(cast_const_char max_c_str);
+	max_connections_to_host = atoi(cast_const_char max_cth_str);
+	max_tries = atoi(cast_const_char max_t_str);
+	receive_timeout = atoi(cast_const_char time_str);
+	unrestartable_receive_timeout = atoi(cast_const_char unrtime_str);
+	abort_background_connections();
 	register_bottom_half(check_queue, NULL);
 }
 
 static unsigned char *proxy_msg[] = {
 	TEXT_(T_HTTP_PROXY__HOST_PORT),
 	TEXT_(T_FTP_PROXY__HOST_PORT),
+#ifdef HAVE_SSL
+	TEXT_(T_HTTPS_PROXY__HOST_PORT),
+#endif
 	TEXT_(T_SOCKS_4A_PROXY__USER_HOST_PORT),
 	TEXT_(T_APPEND_TEXT_TO_SOCKS_LOOKUPS),
 	TEXT_(T_ONLY_PROXIES),
 };
 
+#ifdef HAVE_SSL
+#define N_N	5
+#else
 #define N_N	4
+#endif
 
 static void proxy_fn(struct dialog_data *dlg)
 {
 	struct terminal *term = dlg->win->term;
 	int max = 0, min = 0;
 	int w, rw;
+	int i;
 	int y = gf_val(-1, -G_BFU_FONT_SIZE);
 	if (dlg->win->term->spec->braille) y += gf_val(1, G_BFU_FONT_SIZE);
-	max_text_width(term, proxy_msg[0], &max, AL_LEFT);
-	min_text_width(term, proxy_msg[0], &min, AL_LEFT);
-	max_text_width(term, proxy_msg[1], &max, AL_LEFT);
-	min_text_width(term, proxy_msg[1], &min, AL_LEFT);
-	max_text_width(term, proxy_msg[2], &max, AL_LEFT);
-	max_text_width(term, proxy_msg[2], &max, AL_LEFT);
-	min_text_width(term, proxy_msg[3], &min, AL_LEFT);
-	min_text_width(term, proxy_msg[3], &min, AL_LEFT);
+	for (i = 0; i < N_N; i++) {
+		max_text_width(term, proxy_msg[i], &max, AL_LEFT);
+		min_text_width(term, proxy_msg[i], &min, AL_LEFT);
+	}
 	max_group_width(term, proxy_msg + N_N, dlg->items + N_N, dlg->n - 2 - N_N, &max);
 	min_group_width(term, proxy_msg + N_N, dlg->items + N_N, dlg->n - 2 - N_N, &min);
 	max_buttons_width(term, dlg->items + dlg->n - 2, 2, &max);
@@ -1145,14 +1465,10 @@ static void proxy_fn(struct dialog_data *dlg)
 	if (w > dlg->win->term->x - 2 * DIALOG_LB) w = dlg->win->term->x - 2 * DIALOG_LB;
 	if (w < 1) w = 1;
 	rw = 0;
-	dlg_format_text_and_field(dlg, NULL, proxy_msg[0], &dlg->items[0], 0, &y, w, &rw, COLOR_DIALOG_TEXT, AL_LEFT);
-	if (!dlg->win->term->spec->braille) y += gf_val(1, G_BFU_FONT_SIZE * 1);
-	dlg_format_text_and_field(dlg, NULL, proxy_msg[1], &dlg->items[1], 0, &y, w, &rw, COLOR_DIALOG_TEXT, AL_LEFT);
-	if (!dlg->win->term->spec->braille) y += gf_val(1, G_BFU_FONT_SIZE * 1);
-	dlg_format_text_and_field(dlg, NULL, proxy_msg[2], &dlg->items[2], 0, &y, w, &rw, COLOR_DIALOG_TEXT, AL_LEFT);
-	if (!dlg->win->term->spec->braille) y += gf_val(1, G_BFU_FONT_SIZE * 1);
-	dlg_format_text_and_field(dlg, NULL, proxy_msg[3], &dlg->items[3], 0, &y, w, &rw, COLOR_DIALOG_TEXT, AL_LEFT);
-	if (!dlg->win->term->spec->braille) y += gf_val(1, G_BFU_FONT_SIZE * 1);
+	for (i = 0; i < N_N; i++) {
+		dlg_format_text_and_field(dlg, NULL, proxy_msg[i], &dlg->items[i], 0, &y, w, &rw, COLOR_DIALOG_TEXT, AL_LEFT);
+		if (!dlg->win->term->spec->braille) y += gf_val(1, G_BFU_FONT_SIZE * 1);
+	}
 	dlg_format_group(dlg, NULL, proxy_msg + N_N, dlg->items + N_N, dlg->n - 2 - N_N, 0, &y, w, &rw);
 	y += gf_val(1, G_BFU_FONT_SIZE);
 	dlg_format_buttons(dlg, NULL, dlg->items + dlg->n - 2, 2, 0, &y, w, &rw, AL_CENTER);
@@ -1163,14 +1479,10 @@ static void proxy_fn(struct dialog_data *dlg)
 	draw_dlg(dlg);
 	y = dlg->y + DIALOG_TB;
 	if (dlg->win->term->spec->braille) y += gf_val(1, G_BFU_FONT_SIZE);
-	dlg_format_text_and_field(dlg, term, proxy_msg[0], &dlg->items[0], dlg->x + DIALOG_LB, &y, w, NULL, COLOR_DIALOG_TEXT, AL_LEFT);
-	if (!dlg->win->term->spec->braille) y += gf_val(1, G_BFU_FONT_SIZE);
-	dlg_format_text_and_field(dlg, term, proxy_msg[1], &dlg->items[1], dlg->x + DIALOG_LB, &y, w, NULL, COLOR_DIALOG_TEXT, AL_LEFT);
-	if (!dlg->win->term->spec->braille) y += gf_val(1, G_BFU_FONT_SIZE);
-	dlg_format_text_and_field(dlg, term, proxy_msg[2], &dlg->items[2], dlg->x + DIALOG_LB, &y, w, NULL, COLOR_DIALOG_TEXT, AL_LEFT);
-	if (!dlg->win->term->spec->braille) y += gf_val(1, G_BFU_FONT_SIZE);
-	dlg_format_text_and_field(dlg, term, proxy_msg[3], &dlg->items[3], dlg->x + DIALOG_LB, &y, w, NULL, COLOR_DIALOG_TEXT, AL_LEFT);
-	if (!dlg->win->term->spec->braille) y += gf_val(1, G_BFU_FONT_SIZE);
+	for (i = 0; i < N_N; i++) {
+		dlg_format_text_and_field(dlg, term, proxy_msg[i], &dlg->items[i], dlg->x + DIALOG_LB, &y, w, NULL, COLOR_DIALOG_TEXT, AL_LEFT);
+		if (!dlg->win->term->spec->braille) y += gf_val(1, G_BFU_FONT_SIZE);
+	}
 	dlg_format_group(dlg, term, proxy_msg + N_N, &dlg->items[N_N], dlg->n - 2 - N_N, dlg->x + DIALOG_LB, &y, w, NULL);
 	y += gf_val(1, G_BFU_FONT_SIZE);
 	dlg_format_buttons(dlg, term, &dlg->items[dlg->n - 2], 2, dlg->x + DIALOG_LB, &y, w, NULL, AL_CENTER);
@@ -1180,42 +1492,52 @@ static int dlg_proxy_options(struct dialog_data *dlg, struct dialog_item_data *d
 {
 	struct proxies *p = (struct proxies *)di->cdata;
 	struct dialog *d;
-	snprint(max_c_str, 3, max_connections);
-	snprint(max_cth_str, 3, max_connections_to_host);
-	snprint(max_t_str, 3, max_tries);
-	snprint(time_str, 5, receive_timeout);
-	snprint(unrtime_str, 5, unrestartable_receive_timeout);
+	int a = 0;
 	d = mem_calloc(sizeof(struct dialog) + 8 * sizeof(struct dialog_item));
 	d->title = TEXT_(T_PROXIES);
 	d->fn = proxy_fn;
-	d->refresh = (void (*)(void *))refresh_net;
-	d->items[0].type = D_FIELD;
-	d->items[0].dlen = MAX_STR_LEN;
-	d->items[0].data = p->http_proxy;
-	d->items[1].type = D_FIELD;
-	d->items[1].dlen = MAX_STR_LEN;
-	d->items[1].data = p->ftp_proxy;
-	d->items[2].type = D_FIELD;
-	d->items[2].dlen = MAX_STR_LEN;
-	d->items[2].data = p->socks_proxy;
-	d->items[3].type = D_FIELD;
-	d->items[3].dlen = MAX_STR_LEN;
-	d->items[3].data = p->dns_append;
-	d->items[4].type = D_CHECKBOX;
-	d->items[4].data = (unsigned char *)&p->only_proxies;
-	d->items[4].dlen = sizeof(int);
-	d->items[5].type = D_BUTTON;
-	d->items[5].gid = B_ENTER;
-	d->items[5].fn = ok_dialog;
-	d->items[5].text = TEXT_(T_OK);
-	d->items[6].type = D_BUTTON;
-	d->items[6].gid = B_ESC;
-	d->items[6].fn = cancel_dialog;
-	d->items[6].text = TEXT_(T_CANCEL);
-	d->items[7].type = D_END;
+	d->items[a].type = D_FIELD;
+	d->items[a].dlen = MAX_STR_LEN;
+	d->items[a].data = p->http_proxy;
+	a++;
+	d->items[a].type = D_FIELD;
+	d->items[a].dlen = MAX_STR_LEN;
+	d->items[a].data = p->ftp_proxy;
+	a++;
+#ifdef HAVE_SSL
+	d->items[a].type = D_FIELD;
+	d->items[a].dlen = MAX_STR_LEN;
+	d->items[a].data = p->https_proxy;
+	a++;
+#endif
+	d->items[a].type = D_FIELD;
+	d->items[a].dlen = MAX_STR_LEN;
+	d->items[a].data = p->socks_proxy;
+	a++;
+	d->items[a].type = D_FIELD;
+	d->items[a].dlen = MAX_STR_LEN;
+	d->items[a].data = p->dns_append;
+	a++;
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].data = (unsigned char *)&p->only_proxies;
+	d->items[a].dlen = sizeof(int);
+	a++;
+	d->items[a].type = D_BUTTON;
+	d->items[a].gid = B_ENTER;
+	d->items[a].fn = ok_dialog;
+	d->items[a].text = TEXT_(T_OK);
+	a++;
+	d->items[a].type = D_BUTTON;
+	d->items[a].gid = B_ESC;
+	d->items[a].fn = cancel_dialog;
+	d->items[a].text = TEXT_(T_CANCEL);
+	a++;
+	d->items[a].type = D_END;
 	do_dialog(dlg->win->term, d, getml(d, NULL));
 	return 0;
 }
+
+#undef N_N
 
 static unsigned char *net_msg[] = {
 	TEXT_(T_MAX_CONNECTIONS),
@@ -1223,93 +1545,138 @@ static unsigned char *net_msg[] = {
 	TEXT_(T_RETRIES),
 	TEXT_(T_RECEIVE_TIMEOUT_SEC),
 	TEXT_(T_TIMEOUT_WHEN_UNRESTARTABLE),
+	TEXT_(T_BIND_TO_LOCAL_IP_ADDRESS),
 	TEXT_(T_ASYNC_DNS_LOOKUP),
 	TEXT_(T_SET_TIME_OF_DOWNLOADED_FILES),
-	"",
-	"",
-	"",
+	cast_uchar "",
+	cast_uchar "",
+	cast_uchar "",
 };
+
+#ifdef SUPPORT_IPV6
+static unsigned char *net_msg_ipv6[] = {
+	TEXT_(T_MAX_CONNECTIONS),
+	TEXT_(T_MAX_CONNECTIONS_TO_ONE_HOST),
+	TEXT_(T_RETRIES),
+	TEXT_(T_RECEIVE_TIMEOUT_SEC),
+	TEXT_(T_TIMEOUT_WHEN_UNRESTARTABLE),
+	TEXT_(T_BIND_TO_LOCAL_IP_ADDRESS),
+	TEXT_(T_BIND_TO_LOCAL_IPV6_ADDRESS),
+	TEXT_(T_ASYNC_DNS_LOOKUP),
+	TEXT_(T_SET_TIME_OF_DOWNLOADED_FILES),
+	cast_uchar "",
+	cast_uchar "",
+	cast_uchar "",
+	cast_uchar "",
+};
+#endif
 
 static void net_options(struct terminal *term, void *xxx, void *yyy)
 {
 	struct dialog *d;
+	int a;
 	snprint(max_c_str, 3, max_connections);
 	snprint(max_cth_str, 3, max_connections_to_host);
 	snprint(max_t_str, 3, max_tries);
 	snprint(time_str, 5, receive_timeout);
 	snprint(unrtime_str, 5, unrestartable_receive_timeout);
-	d = mem_calloc(sizeof(struct dialog) + 12 * sizeof(struct dialog_item));
+	d = mem_calloc(sizeof(struct dialog) + 15 * sizeof(struct dialog_item));
 	d->title = TEXT_(T_NETWORK_OPTIONS);
 	d->fn = group_fn;
-	d->udata = net_msg;
+#ifdef SUPPORT_IPV6
+	if (support_ipv6) d->udata = net_msg_ipv6;
+	else
+#endif
+		d->udata = net_msg;
 	d->refresh = (void (*)(void *))refresh_net;
-	d->items[0].type = D_FIELD;
-	d->items[0].data = max_c_str;
-	d->items[0].dlen = 3;
-	d->items[0].fn = check_number;
-	d->items[0].gid = 1;
-	d->items[0].gnum = 99;
-	d->items[1].type = D_FIELD;
-	d->items[1].data = max_cth_str;
-	d->items[1].dlen = 3;
-	d->items[1].fn = check_number;
-	d->items[1].gid = 1;
-	d->items[1].gnum = 99;
-	d->items[2].type = D_FIELD;
-	d->items[2].data = max_t_str;
-	d->items[2].dlen = 3;
-	d->items[2].fn = check_number;
-	d->items[2].gid = 0;
-	d->items[2].gnum = 16;
-	d->items[3].type = D_FIELD;
-	d->items[3].data = time_str;
-	d->items[3].dlen = 5;
-	d->items[3].fn = check_number;
-	d->items[3].gid = 1;
-	d->items[3].gnum = 9999;
-	d->items[4].type = D_FIELD;
-	d->items[4].data = unrtime_str;
-	d->items[4].dlen = 5;
-	d->items[4].fn = check_number;
-	d->items[4].gid = 1;
-	d->items[4].gnum = 9999;
-	d->items[5].type = D_CHECKBOX;
-	d->items[5].data = (unsigned char *)&async_lookup;
-	d->items[5].dlen = sizeof(int);
-	d->items[6].type = D_CHECKBOX;
-	d->items[6].data = (unsigned char *)&download_utime;
-	d->items[6].dlen = sizeof(int);
-	d->items[7].type = D_BUTTON;
-	d->items[7].gid = 0;
-	d->items[7].fn = dlg_proxy_options;
-	d->items[7].text = TEXT_(T_PROXIES);
-	d->items[7].data = (unsigned char *)&proxies;
-	d->items[7].dlen = sizeof(struct proxies);
-	d->items[8].type = D_BUTTON;
-	d->items[8].gid = 0;
-	d->items[8].fn = dlg_http_options;
-	d->items[8].text = TEXT_(T_HTTP_OPTIONS);
-	d->items[8].data = (unsigned char *)&http_options;
-	d->items[8].dlen = sizeof(struct http_options);
-	d->items[9].type = D_BUTTON;
-	d->items[9].gid = 0;
-	d->items[9].fn = dlg_ftp_options;
-	d->items[9].text = TEXT_(T_FTP_OPTIONS);
-	d->items[9].data = (unsigned char *)&ftp_options;
-	d->items[9].dlen = sizeof(struct ftp_options);
-	d->items[10].type = D_BUTTON;
-	d->items[10].gid = B_ENTER;
-	d->items[10].fn = ok_dialog;
-	d->items[10].text = TEXT_(T_OK);
-	d->items[11].type = D_BUTTON;
-	d->items[11].gid = B_ESC;
-	d->items[11].fn = cancel_dialog;
-	d->items[11].text = TEXT_(T_CANCEL);
-	d->items[12].type = D_END;
+	a=0;
+	d->items[a].type = D_FIELD;
+	d->items[a].data = max_c_str;
+	d->items[a].dlen = 3;
+	d->items[a].fn = check_number;
+	d->items[a].gid = 1;
+	d->items[a++].gnum = 99;
+	d->items[a].type = D_FIELD;
+	d->items[a].data = max_cth_str;
+	d->items[a].dlen = 3;
+	d->items[a].fn = check_number;
+	d->items[a].gid = 1;
+	d->items[a++].gnum = 99;
+	d->items[a].type = D_FIELD;
+	d->items[a].data = max_t_str;
+	d->items[a].dlen = 3;
+	d->items[a].fn = check_number;
+	d->items[a].gid = 0;
+	d->items[a++].gnum = 16;
+	d->items[a].type = D_FIELD;
+	d->items[a].data = time_str;
+	d->items[a].dlen = 5;
+	d->items[a].fn = check_number;
+	d->items[a].gid = 1;
+	d->items[a++].gnum = 9999;
+	d->items[a].type = D_FIELD;
+	d->items[a].data = unrtime_str;
+	d->items[a].dlen = 5;
+	d->items[a].fn = check_number;
+	d->items[a].gid = 1;
+	d->items[a++].gnum = 9999;
+	d->items[a].type = D_FIELD;
+	d->items[a].data = bind_ip_address;
+	d->items[a].dlen = sizeof(bind_ip_address);
+	d->items[a++].fn = check_local_ip_address;
+#ifdef SUPPORT_IPV6
+	if (support_ipv6) {
+		d->items[a].type = D_FIELD;
+		d->items[a].data = bind_ipv6_address;
+		d->items[a].dlen = sizeof(bind_ipv6_address);
+		d->items[a++].fn = check_local_ipv6_address;
+	}
+#endif
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].data = (unsigned char *)&async_lookup;
+	d->items[a++].dlen = sizeof(int);
+	d->items[a].type = D_CHECKBOX;
+	d->items[a].data = (unsigned char *)&download_utime;
+	d->items[a++].dlen = sizeof(int);
+#ifdef SUPPORT_IPV6
+	if (support_ipv6) {
+		d->items[a].type = D_BUTTON;
+		d->items[a].gid = 0;
+		d->items[a].fn = dlg_ipv6_options;
+		d->items[a].text = TEXT_(T_IPV6_OPTIONS);
+		d->items[a].data = (unsigned char *)&ipv6_options;
+		d->items[a++].dlen = sizeof(struct ipv6_options);
+	}
+#endif
+	d->items[a].type = D_BUTTON;
+	d->items[a].gid = 0;
+	d->items[a].fn = dlg_proxy_options;
+	d->items[a].text = TEXT_(T_PROXIES);
+	d->items[a].data = (unsigned char *)&proxies;
+	d->items[a++].dlen = sizeof(struct proxies);
+	d->items[a].type = D_BUTTON;
+	d->items[a].gid = 0;
+	d->items[a].fn = dlg_http_options;
+	d->items[a].text = TEXT_(T_HTTP_OPTIONS);
+	d->items[a].data = (unsigned char *)&http_options;
+	d->items[a++].dlen = sizeof(struct http_options);
+	d->items[a].type = D_BUTTON;
+	d->items[a].gid = 0;
+	d->items[a].fn = dlg_ftp_options;
+	d->items[a].text = TEXT_(T_FTP_OPTIONS);
+	d->items[a].data = (unsigned char *)&ftp_options;
+	d->items[a++].dlen = sizeof(struct ftp_options);
+	d->items[a].type = D_BUTTON;
+	d->items[a].gid = B_ENTER;
+	d->items[a].fn = ok_dialog;
+	d->items[a++].text = TEXT_(T_OK);
+	d->items[a].type = D_BUTTON;
+	d->items[a].gid = B_ESC;
+	d->items[a].fn = cancel_dialog;
+	d->items[a++].text = TEXT_(T_CANCEL);
+	d->items[a].type = D_END;
 	do_dialog(term, d, getml(d, NULL));
 }
-
-#undef N_N
 
 static unsigned char *prg_msg[] = {
 	TEXT_(T_MAILTO_PROG),
@@ -1318,7 +1685,7 @@ static unsigned char *prg_msg[] = {
 	TEXT_(T_MMS_PROG),
 	TEXT_(T_MAGNET_PROG),
 	TEXT_(T_SHELL_PROG),
-	""
+	cast_uchar ""
 };
 
 static void netprog_fn(struct dialog_data *dlg)
@@ -1425,7 +1792,8 @@ static void net_programs(struct terminal *term, void *xxx, void *yyy)
 		d->title = TEXT_(T_MAIL_AND_TELNET_PROGRAMS);
 
 	d->fn = netprog_fn;
-	d->items[a=0].type = D_FIELD;
+	a=0;
+	d->items[a].type = D_FIELD;
 	d->items[a].dlen = MAX_STR_LEN;
 	d->items[a++].data = get_prog(&mailto_prog);
 	d->items[a].type = D_FIELD;
@@ -1459,34 +1827,29 @@ static void net_programs(struct terminal *term, void *xxx, void *yyy)
 	do_dialog(term, d, getml(d, NULL));
 }
 
-/*void net_opt_ask(struct terminal *term, void *xxx, void *yyy)
-{
-	if (list_empty(downloads)) {
-		net_options(term, xxx, yyy);
-		return;
-	}
-	msg_box(term, NULL, _("Network options"), AL_CENTER, _("Warning: configuring network will terminate all running downloads. Do you really want to configure network?"), term, 2, _("Yes"), (void (*)(void *))net_options, B_ENTER, _("No"), NULL, B_ESC);
-}*/
-
 static unsigned char mc_str[8];
 #ifdef G
 static unsigned char ic_str[8];
+static unsigned char fc_str[8];
 #endif
 static unsigned char doc_str[4];
 
 static void cache_refresh(void *xxx)
 {
-	memory_cache_size = atoi(mc_str) * 1024;
+	memory_cache_size = atoi(cast_const_char mc_str) * 1024;
 #ifdef G
-	if (F) image_cache_size = atoi(ic_str) * 1024;
+	if (F) {
+		image_cache_size = atoi(cast_const_char ic_str) * 1024;
+		font_cache_size = atoi(cast_const_char fc_str) * 1024;
+	}
 #endif
-	max_format_cache_entries = atoi(doc_str);
-	shrink_memory(SH_CHECK_QUOTA);
+	max_format_cache_entries = atoi(cast_const_char doc_str);
+	shrink_memory(SH_CHECK_QUOTA, 0);
 }
 
 static unsigned char *cache_texts[] = { TEXT_(T_MEMORY_CACHE_SIZE__KB), TEXT_(T_NUMBER_OF_FORMATTED_DOCUMENTS), TEXT_(T_AGGRESSIVE_CACHE) };
 #ifdef G
-static unsigned char *g_cache_texts[] = { TEXT_(T_MEMORY_CACHE_SIZE__KB), TEXT_(T_IMAGE_CACHE_SIZE__KB), TEXT_(T_NUMBER_OF_FORMATTED_DOCUMENTS), TEXT_(T_AGGRESSIVE_CACHE) };
+static unsigned char *g_cache_texts[] = { TEXT_(T_MEMORY_CACHE_SIZE__KB), TEXT_(T_IMAGE_CACHE_SIZE__KB), TEXT_(T_FONT_CACHE_SIZE__KB), TEXT_(T_NUMBER_OF_FORMATTED_DOCUMENTS), TEXT_(T_AGGRESSIVE_CACHE) };
 #endif
 
 static void cache_opt(struct terminal *term, void *xxx, void *yyy)
@@ -1495,7 +1858,10 @@ static void cache_opt(struct terminal *term, void *xxx, void *yyy)
 	int a;
 	snprint(mc_str, 8, memory_cache_size / 1024);
 #ifdef G
-	if (F) snprint(ic_str, 8, image_cache_size / 1024);
+	if (F) {
+		snprint(ic_str, 8, image_cache_size / 1024);
+		snprint(fc_str, 8, font_cache_size / 1024);
+	}
 #endif
 	snprint(doc_str, 4, max_format_cache_entries);
 #ifdef G
@@ -1504,7 +1870,7 @@ static void cache_opt(struct terminal *term, void *xxx, void *yyy)
 	} else
 #endif
 	{
-		d = mem_calloc(sizeof(struct dialog) + 6 * sizeof(struct dialog_item));
+		d = mem_calloc(sizeof(struct dialog) + 5 * sizeof(struct dialog_item));
 	}
 	a=0;
 	d->title = TEXT_(T_CACHE_OPTIONS);
@@ -1528,6 +1894,13 @@ static void cache_opt(struct terminal *term, void *xxx, void *yyy)
 		d->items[a].type = D_FIELD;
 		d->items[a].dlen = 8;
 		d->items[a].data = ic_str;
+		d->items[a].fn = check_number;
+		d->items[a].gid = 0;
+		d->items[a].gnum = MAXINT / 1024;
+		a++;
+		d->items[a].type = D_FIELD;
+		d->items[a].dlen = 8;
+		d->items[a].data = fc_str;
 		d->items[a].fn = check_number;
 		d->items[a].gid = 0;
 		d->items[a].gnum = MAXINT / 1024;
@@ -1563,8 +1936,8 @@ static void cache_opt(struct terminal *term, void *xxx, void *yyy)
 static void menu_shell(struct terminal *term, void *xxx, void *yyy)
 {
 	unsigned char *sh;
-	if (!(sh = GETSHELL)) sh = DEFAULT_SHELL;
-	exec_on_terminal(term, sh, "", 1);
+	if (!(sh = cast_uchar GETSHELL)) sh = cast_uchar DEFAULT_SHELL;
+	exec_on_terminal(term, sh, cast_uchar "", 1);
 }
 
 static void menu_kill_background_connections(struct terminal *term, void *xxx, void *yyy)
@@ -1591,12 +1964,11 @@ static unsigned char image_scale_str[6];
 
 static void html_refresh(struct session *ses)
 {
-	ses->ds.margin = atoi(marg_str);
+	ses->ds.margin = atoi(cast_const_char marg_str);
 #ifdef G
-	if (F)
-	{
-		ses->ds.font_size = atoi(html_font_str);
-		ses->ds.image_scale = atoi(image_scale_str);
+	if (F) {
+		ses->ds.font_size = atoi(cast_const_char html_font_str);
+		ses->ds.image_scale = atoi(cast_const_char image_scale_str);
 	}
 #endif
 	html_interpret_recursive(ses->screen);
@@ -1608,23 +1980,23 @@ static unsigned char *html_texts_g[] = { TEXT_(T_DISPLAY_TABLES),
 	TEXT_(T_DISPLAY_FRAMES), TEXT_(T_DISPLAY_LINKS_TO_IMAGES),
 	TEXT_(T_DISPLAY_IMAGE_FILENAMES), TEXT_(T_DISPLAY_IMAGES),
 	TEXT_(T_AUTO_REFRESH), TEXT_(T_TARGET_IN_NEW_WINDOW), TEXT_(T_TEXT_MARGIN),
-	"", TEXT_(T_IGNORE_CHARSET_INFO_SENT_BY_SERVER), TEXT_(T_USER_FONT_SIZE),
+	cast_uchar "", TEXT_(T_IGNORE_CHARSET_INFO_SENT_BY_SERVER), TEXT_(T_USER_FONT_SIZE),
 	TEXT_(T_SCALE_ALL_IMAGES_BY), TEXT_(T_PORN_ENABLE)
 };
 #endif
 
-static unsigned char *html_texts[] = { TEXT_(T_DISPLAY_TABLES), TEXT_(T_DISPLAY_FRAMES), TEXT_(T_DISPLAY_LINKS_TO_IMAGES), TEXT_(T_DISPLAY_IMAGE_FILENAMES), TEXT_(T_LINK_ORDER_BY_COLUMNS), TEXT_(T_NUMBERED_LINKS), TEXT_(T_AUTO_REFRESH), TEXT_(T_TARGET_IN_NEW_WINDOW), TEXT_(T_TEXT_MARGIN), "", TEXT_(T_IGNORE_CHARSET_INFO_SENT_BY_SERVER) };
+static unsigned char *html_texts[] = { TEXT_(T_DISPLAY_TABLES), TEXT_(T_DISPLAY_FRAMES), TEXT_(T_DISPLAY_LINKS_TO_IMAGES), TEXT_(T_DISPLAY_IMAGE_FILENAMES), TEXT_(T_LINK_ORDER_BY_COLUMNS), TEXT_(T_NUMBERED_LINKS), TEXT_(T_AUTO_REFRESH), TEXT_(T_TARGET_IN_NEW_WINDOW), TEXT_(T_TEXT_MARGIN), cast_uchar "", TEXT_(T_IGNORE_CHARSET_INFO_SENT_BY_SERVER) };
 
 static int dlg_assume_cp(struct dialog_data *dlg, struct dialog_item_data *di)
 {
-	charset_sel_list(dlg->win->term, dlg->dlg->udata2, (int *)di->cdata, 0);
+	charset_sel_list(dlg->win->term, dlg->dlg->udata2, (int *)di->cdata);
 	return 0;
 }
 
 #ifdef G
 static int dlg_kb_cp(struct dialog_data *dlg, struct dialog_item_data *di)
 {
-	charset_sel_list(dlg->win->term, dlg->dlg->udata2, (int *)di->cdata, 0);
+	charset_sel_list(dlg->win->term, dlg->dlg->udata2, (int *)di->cdata);
 	return 0;
 }
 #endif
@@ -1636,12 +2008,12 @@ static void menu_html_options(struct terminal *term, void *xxx, struct session *
 	
 	snprint(marg_str, 2, ses->ds.margin);
 	if (!F) {
-		d = mem_calloc(sizeof(struct dialog) + 14 * sizeof(struct dialog_item));
+		d = mem_calloc(sizeof(struct dialog) + 13 * sizeof(struct dialog_item));
 #ifdef G
 	} else {
-		d = mem_calloc(sizeof(struct dialog) + 17 * sizeof(struct dialog_item));
-		snprintf(html_font_str,4,"%d",ses->ds.font_size);
-		snprintf(image_scale_str,6,"%d",ses->ds.image_scale);
+		d = mem_calloc(sizeof(struct dialog) + 15 * sizeof(struct dialog_item));
+		snprintf(cast_char html_font_str,4,"%d",ses->ds.font_size);
+		snprintf(cast_char image_scale_str,6,"%d",ses->ds.image_scale);
 #endif
 	}
 	d->title = TEXT_(T_HTML_OPTIONS);
@@ -1668,8 +2040,7 @@ static void menu_html_options(struct terminal *term, void *xxx, struct session *
 	d->items[a].dlen = sizeof(int);
 	a++;
 #ifdef G
-	if (F)
-	{
+	if (F) {
 		d->items[a].type = D_CHECKBOX;
 		d->items[a].data = (unsigned char *) &ses->ds.display_images;
 		d->items[a].dlen = sizeof(int);
@@ -1712,20 +2083,8 @@ static void menu_html_options(struct terminal *term, void *xxx, struct session *
 	d->items[a].data = (unsigned char *) &ses->ds.hard_assume;
 	d->items[a].dlen = sizeof(int);
 	a++;
-	if (!F){
-		d->items[a].type = D_BUTTON;
-		d->items[a].gid = B_ENTER;
-		d->items[a].fn = ok_dialog;
-		d->items[a].text = TEXT_(T_OK);
-		a++;
-		d->items[a].type = D_BUTTON;
-		d->items[a].gid = B_ESC;
-		d->items[a].fn = cancel_dialog;
-		d->items[a].text = TEXT_(T_CANCEL);
-		a++;
-		d->items[a].type = D_END;
 #ifdef G
-	}else{
+	if (F) {
 		d->items[a].type = D_FIELD;
 		d->items[a].dlen = 4;
 		d->items[a].data = html_font_str;
@@ -1744,19 +2103,151 @@ static void menu_html_options(struct terminal *term, void *xxx, struct session *
 		d->items[a].data = (unsigned char *) &ses->ds.porn_enable;
 		d->items[a].dlen = sizeof(int);
 		a++;
-		d->items[a].type = D_BUTTON;
-		d->items[a].gid = B_ENTER;
-		d->items[a].fn = ok_dialog;
-		d->items[a].text = TEXT_(T_OK);
-		a++;
-		d->items[a].type = D_BUTTON;
-		d->items[a].gid = B_ESC;
-		d->items[a].fn = cancel_dialog;
-		d->items[a].text = TEXT_(T_CANCEL);
-		a++;
-		d->items[a].type = D_END;
-#endif
 	}
+#endif
+	d->items[a].type = D_BUTTON;
+	d->items[a].gid = B_ENTER;
+	d->items[a].fn = ok_dialog;
+	d->items[a].text = TEXT_(T_OK);
+	a++;
+	d->items[a].type = D_BUTTON;
+	d->items[a].gid = B_ESC;
+	d->items[a].fn = cancel_dialog;
+	d->items[a].text = TEXT_(T_CANCEL);
+	a++;
+	d->items[a].type = D_END;
+	do_dialog(term, d, getml(d, NULL));
+}
+
+static unsigned char *color_texts[] = { cast_uchar "", cast_uchar "", cast_uchar "", TEXT_(T_IGNORE_DOCUMENT_COLOR) };
+
+#ifdef G
+static unsigned char *color_texts_g[] = { TEXT_(T_TEXT_COLOR), TEXT_(T_LINK_COLOR), TEXT_(T_BACKGROUND_COLOR), TEXT_(T_IGNORE_DOCUMENT_COLOR) };
+
+static unsigned char g_text_color_str[7];
+static unsigned char g_link_color_str[7];
+static unsigned char g_background_color_str[7];
+#endif
+
+static void html_color_refresh(struct session *ses)
+{
+#ifdef G
+	if (F) {
+		ses->ds.g_text_color = strtol(cast_const_char g_text_color_str, NULL, 16);
+		ses->ds.g_link_color = strtol(cast_const_char g_link_color_str, NULL, 16);
+		ses->ds.g_background_color = strtol(cast_const_char g_background_color_str, NULL, 16);
+	}
+#endif
+	html_interpret_recursive(ses->screen);
+	draw_formatted(ses);
+}
+
+static void select_color(struct terminal *term, int n, int *ptr)
+{
+	int i;
+	struct menu_item *mi;
+	mi = new_menu(1);
+	for (i = 0; i < n; i++) {
+		add_to_menu(&mi, TEXT_(T_COLOR_0 + i), cast_uchar "", cast_uchar "", MENU_FUNC set_val, (void *)(unsigned long)i, 0, i);
+	}
+	do_menu_selected(term, mi, ptr, *ptr);
+}
+
+static int select_color_8(struct dialog_data *dlg, struct dialog_item_data *di)
+{
+	select_color(dlg->win->term, 8, (int *)di->cdata);
+	return 0;
+}
+
+static int select_color_16(struct dialog_data *dlg, struct dialog_item_data *di)
+{
+	select_color(dlg->win->term, 16, (int *)di->cdata);
+	return 0;
+}
+
+static void menu_color(struct terminal *term, void *xxx, struct session *ses)
+{
+	struct dialog *d;
+
+#ifdef G
+	if (F) {
+		snprintf(cast_char g_text_color_str, 7, "%06x", (unsigned)ses->ds.g_text_color);
+		snprintf(cast_char g_link_color_str, 7, "%06x", (unsigned)ses->ds.g_link_color);
+		snprintf(cast_char g_background_color_str,7,"%06x", (unsigned)ses->ds.g_background_color);
+	}
+#endif
+
+	d = mem_calloc(sizeof(struct dialog) + 6 * sizeof(struct dialog_item));
+	d->title = TEXT_(T_COLOR);
+	d->fn = group_fn;
+	d->udata = gf_val(color_texts, color_texts_g);
+	d->udata2 = ses;
+	d->refresh = (void (*)(void *))html_color_refresh;
+	d->refresh_data = ses;
+
+	if (!F) {
+		d->items[0].type = D_BUTTON;
+		d->items[0].gid = 0;
+		d->items[0].text = TEXT_(T_TEXT_COLOR);
+		d->items[0].fn = select_color_16;
+		d->items[0].data = (unsigned char *)&ses->ds.t_text_color;
+		d->items[0].dlen = sizeof(int);
+	
+		d->items[1].type = D_BUTTON;
+		d->items[1].gid = 0;
+		d->items[1].text = TEXT_(T_LINK_COLOR);
+		d->items[1].fn = select_color_16;
+		d->items[1].data = (unsigned char *)&ses->ds.t_link_color;
+		d->items[1].dlen = sizeof(int);
+	
+		d->items[2].type = D_BUTTON;
+		d->items[2].gid = 0;
+		d->items[2].text = TEXT_(T_BACKGROUND_COLOR);
+		d->items[2].fn = select_color_8;
+		d->items[2].data = (unsigned char *)&ses->ds.t_background_color;
+		d->items[2].dlen = sizeof(int);
+	}
+#ifdef G
+	else {
+		d->items[0].type = D_FIELD;
+		d->items[0].dlen = 7;
+		d->items[0].data = g_text_color_str;
+		d->items[0].fn = check_hex_number;
+		d->items[0].gid = 0;
+		d->items[0].gnum = 0xffffff;
+
+		d->items[1].type = D_FIELD;
+		d->items[1].dlen = 7;
+		d->items[1].data = g_link_color_str;
+		d->items[1].fn = check_hex_number;
+		d->items[1].gid = 0;
+		d->items[1].gnum = 0xffffff;
+
+		d->items[2].type = D_FIELD;
+		d->items[2].dlen = 7;
+		d->items[2].data = g_background_color_str;
+		d->items[2].fn = check_hex_number;
+		d->items[2].gid = 0;
+		d->items[2].gnum = 0xffffff;
+	}
+#endif
+
+	d->items[3].type = D_CHECKBOX;
+	d->items[3].data = (unsigned char *) gf_val(&ses->ds.t_ignore_document_color, &ses->ds.g_ignore_document_color);
+	d->items[3].dlen = sizeof(int);
+
+	d->items[4].type = D_BUTTON;
+	d->items[4].gid = B_ENTER;
+	d->items[4].fn = ok_dialog;
+	d->items[4].text = TEXT_(T_OK);
+
+	d->items[5].type = D_BUTTON;
+	d->items[5].gid = B_ESC;
+	d->items[5].fn = cancel_dialog;
+	d->items[5].text = TEXT_(T_CANCEL);
+
+	d->items[6].type = D_END;
+
 	do_dialog(term, d, getml(d, NULL));
 }
 
@@ -1770,19 +2261,20 @@ static unsigned char fg_color_str[7];
 static unsigned char scroll_area_color_str[7];
 static unsigned char scroll_bar_color_str[7];
 static unsigned char scroll_frame_color_str[7];
+#endif
 
-static void refresh_misc(void *ignore)
+static void refresh_misc(struct session *ses)
 {
-	if (F)
-	{
+#ifdef G
+	if (F) {
 		struct session *ses;
 
-		menu_font_size=strtol(menu_font_str,0,10);
-		G_BFU_FG_COLOR=strtol(fg_color_str,0,16);
-		G_BFU_BG_COLOR=strtol(bg_color_str,0,16);
-		G_SCROLL_BAR_AREA_COLOR=strtol(scroll_area_color_str,0,16);
-		G_SCROLL_BAR_BAR_COLOR=strtol(scroll_bar_color_str,0,16);
-		G_SCROLL_BAR_FRAME_COLOR=strtol(scroll_frame_color_str,0,16);
+		menu_font_size=strtol(cast_const_char menu_font_str,NULL,10);
+		G_BFU_FG_COLOR=strtol(cast_const_char fg_color_str,NULL,16);
+		G_BFU_BG_COLOR=strtol(cast_const_char bg_color_str,NULL,16);
+		G_SCROLL_BAR_AREA_COLOR=strtol(cast_const_char scroll_area_color_str,NULL,16);
+		G_SCROLL_BAR_BAR_COLOR=strtol(cast_const_char scroll_bar_color_str,NULL,16);
+		G_SCROLL_BAR_FRAME_COLOR=strtol(cast_const_char scroll_frame_color_str,NULL,16);
 		shutdown_bfu();
 		init_bfu();
 		init_grview();
@@ -1790,15 +2282,14 @@ static void refresh_misc(void *ignore)
 			ses->term->dev->resize_handler(ses->term->dev);
 		}
 	}
-	if (strcmp(new_bookmarks_file,bookmarks_file)||new_bookmarks_codepage!=bookmarks_codepage)
+#endif
+	if (strcmp(cast_const_char new_bookmarks_file, cast_const_char bookmarks_file) || new_bookmarks_codepage != bookmarks_codepage)
 	{
-		save_bookmarks();
-		safe_strncpy(bookmarks_file,new_bookmarks_file,MAX_STR_LEN);
-		bookmarks_codepage=new_bookmarks_codepage;
-		reinit_bookmarks();
+		reinit_bookmarks(ses, new_bookmarks_file, new_bookmarks_codepage);
 	}
 }
 
+#ifdef G
 static unsigned char *miscopt_labels_g[] = { TEXT_(T_MENU_FONT_SIZE), TEXT_(T_ENTER_COLORS_AS_RGB_TRIPLETS), TEXT_(T_MENU_FOREGROUND_COLOR), TEXT_(T_MENU_BACKGROUND_COLOR), TEXT_(T_SCROLL_BAR_AREA_COLOR), TEXT_(T_SCROLL_BAR_BAR_COLOR), TEXT_(T_SCROLL_BAR_FRAME_COLOR), TEXT_(T_BOOKMARKS_FILE), NULL };
 #endif
 static unsigned char *miscopt_labels[] = { TEXT_(T_BOOKMARKS_FILE), NULL };
@@ -1912,26 +2403,23 @@ static void miscelaneous_options(struct terminal *term, void *xxx, struct sessio
 
 	safe_strncpy(new_bookmarks_file,bookmarks_file,MAX_STR_LEN);
 	new_bookmarks_codepage=bookmarks_codepage;
-	if (!F)
-	{
-		d = mem_calloc(sizeof(struct dialog) + 5 * sizeof(struct dialog_item));
+	if (!F) {
+		d = mem_calloc(sizeof(struct dialog) + 4 * sizeof(struct dialog_item));
+	}
 #ifdef G
+	else {
+		d = mem_calloc(sizeof(struct dialog) + 11 * sizeof(struct dialog_item));
+		snprintf(cast_char menu_font_str,4,"%d",menu_font_size);
+		snprintf(cast_char fg_color_str,7,"%06x",(unsigned) G_BFU_FG_COLOR);
+		snprintf(cast_char bg_color_str,7,"%06x",(unsigned) G_BFU_BG_COLOR);
+		snprintf(cast_char scroll_bar_color_str,7,"%06x",(unsigned) G_SCROLL_BAR_BAR_COLOR);
+		snprintf(cast_char scroll_area_color_str,7,"%06x",(unsigned) G_SCROLL_BAR_AREA_COLOR);
+		snprintf(cast_char scroll_frame_color_str,7,"%06x",(unsigned) G_SCROLL_BAR_FRAME_COLOR);
 	}
-	else
-	{
-		d = mem_calloc(sizeof(struct dialog) + 12 * sizeof(struct dialog_item));
-		snprintf(menu_font_str,4,"%d",menu_font_size);
-		snprintf(fg_color_str,7,"%06x",(unsigned) G_BFU_FG_COLOR);
-		snprintf(bg_color_str,7,"%06x",(unsigned) G_BFU_BG_COLOR);
-		snprintf(scroll_bar_color_str,7,"%06x",(unsigned) G_SCROLL_BAR_BAR_COLOR);
-		snprintf(scroll_area_color_str,7,"%06x",(unsigned) G_SCROLL_BAR_AREA_COLOR);
-		snprintf(scroll_frame_color_str,7,"%06x",(unsigned) G_SCROLL_BAR_FRAME_COLOR);
 #endif
-	}
 	d->title = TEXT_(T_MISCELANEOUS_OPTIONS);
-#ifdef G
 	d->refresh = (void (*)(void *))refresh_misc;
-#endif
+	d->refresh_data = ses;
 	d->fn=miscopt_fn;
 	if (!F)
 		d->udata = miscopt_labels;
@@ -1941,8 +2429,7 @@ static void miscelaneous_options(struct terminal *term, void *xxx, struct sessio
 #endif
 	d->udata2 = ses;
 #ifdef G
-	if (F)
-	{
+	if (F) {
 		d->items[a].type = D_FIELD;
 		d->items[a].dlen = 4;
 		d->items[a].data = menu_font_str;
@@ -1987,8 +2474,7 @@ static void miscelaneous_options(struct terminal *term, void *xxx, struct sessio
 		a++;
 	}
 #endif
-	if (!anonymous)
-	{
+	if (!anonymous) {
 		d->items[a].type = D_FIELD;
 		d->items[a].dlen = MAX_STR_LEN;
 		d->items[a].data = new_bookmarks_file;
@@ -2002,16 +2488,15 @@ static void miscelaneous_options(struct terminal *term, void *xxx, struct sessio
 		a++;
 	}
 #ifdef G
-		if (F&&((drv->flags)&GD_NEED_CODEPAGE))
-		{
-			d->items[a].type = D_BUTTON;
-			d->items[a].gid = 0;
-			d->items[a].fn = dlg_kb_cp;
-			d->items[a].text = TEXT_(T_KEYBOARD_CODEPAGE);
-			d->items[a].data = (unsigned char *) &(drv->codepage);
-			d->items[a].dlen = sizeof(int);
-			a++;
-		}
+	if (F && (drv->flags & GD_NEED_CODEPAGE)) {
+		d->items[a].type = D_BUTTON;
+		d->items[a].gid = 0;
+		d->items[a].fn = dlg_kb_cp;
+		d->items[a].text = TEXT_(T_KEYBOARD_CODEPAGE);
+		d->items[a].data = (unsigned char *) &(drv->codepage);
+		d->items[a].dlen = sizeof(int);
+		a++;
+	}
 #endif
 	d->items[a].type = D_BUTTON;
 	d->items[a].gid = B_ENTER;
@@ -2038,10 +2523,10 @@ static void menu_language_list(struct terminal *term, void *xxx, struct session 
 	long i; int sel;
 	unsigned char *n;
 	struct menu_item *mi;
-	if (!(mi = new_menu(1))) return;
+	mi = new_menu(1);
 	for (i = 0; i < n_languages(); i++) {
 		n = language_name(i);
-		add_to_menu(&mi, n, "", "", MENU_FUNC menu_set_language, (void *)i, 0, i);
+		add_to_menu(&mi, n, cast_uchar "", cast_uchar "", MENU_FUNC menu_set_language, (void *)i, 0, i);
 	}
 	sel = current_language;
 	do_menu_selected(term, mi, ses, sel);
@@ -2055,20 +2540,20 @@ static unsigned char y_str[4];
 static void do_resize_terminal(struct terminal *term)
 {
 	unsigned char str[8];
-	strcpy(str, x_str);
-	strcat(str, ",");
-	strcat(str, y_str);
+	strcpy(cast_char str, cast_const_char x_str);
+	strcat(cast_char str, ",");
+	strcat(cast_char str, cast_const_char y_str);
 	do_terminal_function(term, TERM_FN_RESIZE, str);
 }
 
 static void dlg_resize_terminal(struct terminal *term, void *xxx, struct session *ses)
 {
 	struct dialog *d;
-	int x = term->x > 999 ? 999 : term->x;
-	int y = term->y > 999 ? 999 : term->y;
-	sprintf(x_str, "%d", x);
-	sprintf(y_str, "%d", y);
-	d = mem_calloc(sizeof(struct dialog) + 5 * sizeof(struct dialog_item));
+	unsigned x = (unsigned)term->x > 999 ? 999 : term->x;
+	unsigned y = (unsigned)term->y > 999 ? 999 : term->y;
+	sprintf(cast_char x_str, "%u", x);
+	sprintf(cast_char y_str, "%u", y);
+	d = mem_calloc(sizeof(struct dialog) + 4 * sizeof(struct dialog_item));
 	d->title = TEXT_(T_RESIZE_TERMINAL);
 	d->fn = group_fn;
 	d->udata = resize_texts;
@@ -2100,69 +2585,66 @@ static void dlg_resize_terminal(struct terminal *term, void *xxx, struct session
 }
 
 static struct menu_item file_menu11[] = {
-	{ TEXT_(T_GOTO_URL), "g", TEXT_(T_HK_GOTO_URL), MENU_FUNC menu_goto_url, (void *)0, 0, 0 },
-	{ TEXT_(T_GO_BACK), "z", TEXT_(T_HK_GO_BACK), MENU_FUNC menu_go_back, (void *)0, 0, 0 },
-	{ TEXT_(T_HISTORY), ">", TEXT_(T_HK_HISTORY), MENU_FUNC history_menu, (void *)0, 1, 0 },
-	{ TEXT_(T_RELOAD), "Ctrl-R", TEXT_(T_HK_RELOAD), MENU_FUNC menu_reload, (void *)0, 0, 0 },
+	{ TEXT_(T_GOTO_URL), cast_uchar "g", TEXT_(T_HK_GOTO_URL), MENU_FUNC menu_goto_url, (void *)0, 0, 0 },
+	{ TEXT_(T_GO_BACK), cast_uchar "z", TEXT_(T_HK_GO_BACK), MENU_FUNC menu_go_back, (void *)0, 0, 0 },
+	{ TEXT_(T_GO_FORWARD), cast_uchar "x", TEXT_(T_HK_GO_FORWARD), MENU_FUNC menu_go_forward, (void *)0, 0, 0 },
+	{ TEXT_(T_HISTORY), cast_uchar ">", TEXT_(T_HK_HISTORY), MENU_FUNC history_menu, (void *)0, 1, 0 },
+	{ TEXT_(T_RELOAD), cast_uchar "Ctrl-R", TEXT_(T_HK_RELOAD), MENU_FUNC menu_reload, (void *)0, 0, 0 },
 };
 
 #ifdef G
 static struct menu_item file_menu111[] = {
-	{ TEXT_(T_GOTO_URL), "[epg]", TEXT_(T_HK_GOTO_URL), MENU_FUNC menu_goto_url, (void *)0, 0, 0 },
-	{ TEXT_(T_GO_BACK), "<", TEXT_(T_HK_GO_BACK), MENU_FUNC menu_go_back, (void *)0, 0, 0 },
-	{ TEXT_(T_HISTORY), ">", TEXT_(T_HK_HISTORY), MENU_FUNC history_menu, (void *)0, 1, 0 },
-	{ TEXT_(T_RELOAD), "Ctrl-R", TEXT_(T_HK_RELOAD), MENU_FUNC menu_reload, (void *)0, 0, 0 },
+	{ TEXT_(T_GOTO_URL), cast_uchar "[epg]", TEXT_(T_HK_GOTO_URL), MENU_FUNC menu_goto_url, (void *)0, 0, 0 },
+	{ TEXT_(T_GO_BACK), cast_uchar "<", TEXT_(T_HK_GO_BACK), MENU_FUNC menu_go_back, (void *)0, 0, 0 },
+	{ TEXT_(T_GO_FORWARD), cast_uchar ">", TEXT_(T_HK_GO_FORWARD), MENU_FUNC menu_go_forward, (void *)0, 0, 0 },
+	{ TEXT_(T_HISTORY), cast_uchar "", TEXT_(T_HK_HISTORY), MENU_FUNC history_menu, (void *)0, 1, 0 },
+	{ TEXT_(T_RELOAD), cast_uchar "Ctrl-R", TEXT_(T_HK_RELOAD), MENU_FUNC menu_reload, (void *)0, 0, 0 },
 };
 #endif
 
 static struct menu_item file_menu12[] = {
-	{ TEXT_(T_BOOKMARKS), "[fav]", TEXT_(T_HK_BOOKMARKS), MENU_FUNC menu_bookmark_manager, (void *)0, 0, 0 },
-	{ TEXT_(T_SAVE_BOOKMARKS), "", TEXT_(T_HK_SAVE_BOOKMARKS), MENU_FUNC menu_save_bookmarks, (void *)0, 0, 0 },
-	/*{ TEXT_(T_ADD_BOOKMARK), "a", TEXT_(T_HK_ADD_BOOKMARK), MENU_FUNC menu_bookmark_manager, (void *)0, 0, 0 },*/
+	{ TEXT_(T_BOOKMARKS), cast_uchar "[fav]", TEXT_(T_HK_BOOKMARKS), MENU_FUNC menu_bookmark_manager, (void *)0, 0, 0 },
 };
 
 static struct menu_item file_menu21[] = {
-	{ "", "", M_BAR, NULL, NULL, 0, 0 },
-	{ TEXT_(T_SAVE_AS), "", TEXT_(T_HK_SAVE_AS), MENU_FUNC save_as, (void *)0, 0, 0 },
-	{ TEXT_(T_SAVE_URL_AS), "", TEXT_(T_HK_SAVE_URL_AS), MENU_FUNC menu_save_url_as, (void *)0, 0, 0 },
-	{ TEXT_(T_SAVE_FORMATTED_DOCUMENT), "", TEXT_(T_HK_SAVE_FORMATTED_DOCUMENT), MENU_FUNC menu_save_formatted, (void *)0, 0, 0 },
+	{ cast_uchar "", cast_uchar "", M_BAR, NULL, NULL, 0, 0 },
+	{ TEXT_(T_SAVE_AS), cast_uchar "", TEXT_(T_HK_SAVE_AS), MENU_FUNC save_as, (void *)0, 0, 0 },
+	{ TEXT_(T_SAVE_URL_AS), cast_uchar "", TEXT_(T_HK_SAVE_URL_AS), MENU_FUNC menu_save_url_as, (void *)0, 0, 0 },
+	{ TEXT_(T_SAVE_FORMATTED_DOCUMENT), cast_uchar "", TEXT_(T_HK_SAVE_FORMATTED_DOCUMENT), MENU_FUNC menu_save_formatted, (void *)0, 0, 0 },
 };
 
 #ifdef G
 static struct menu_item file_menu211[] = {
-	{ "", "", M_BAR, NULL, NULL, 0, 0 },
-	{ TEXT_(T_SAVE_AS), "", TEXT_(T_HK_SAVE_AS), MENU_FUNC save_as, (void *)0, 0, 0 },
-	{ TEXT_(T_SAVE_URL_AS), "", TEXT_(T_HK_SAVE_URL_AS), MENU_FUNC menu_save_url_as, (void *)0, 0, 0 },
+	{ cast_uchar "", cast_uchar "", M_BAR, NULL, NULL, 0, 0 },
+	{ TEXT_(T_SAVE_AS), cast_uchar "", TEXT_(T_HK_SAVE_AS), MENU_FUNC save_as, (void *)0, 0, 0 },
+	{ TEXT_(T_SAVE_URL_AS), cast_uchar "", TEXT_(T_HK_SAVE_URL_AS), MENU_FUNC menu_save_url_as, (void *)0, 0, 0 },
 };
 #endif
 
 #ifdef G
 static struct menu_item file_menu211_clipb[] = {
-	{ "", "", M_BAR, NULL, NULL, 0, 0 },
-	{ TEXT_(T_SAVE_AS), "", TEXT_(T_HK_SAVE_AS), MENU_FUNC save_as, (void *)0, 0, 0 },
-	{ TEXT_(T_SAVE_URL_AS), "", TEXT_(T_HK_SAVE_URL_AS), MENU_FUNC menu_save_url_as, (void *)0, 0, 0 },
-	{ TEXT_(T_COPY_URL_LOCATION), "", TEXT_(T_HK_COPY_URL_LOCATION), MENU_FUNC copy_url_location, (void *)0, 0, 0 },
+	{ cast_uchar "", cast_uchar "", M_BAR, NULL, NULL, 0, 0 },
+	{ TEXT_(T_SAVE_AS), cast_uchar "", TEXT_(T_HK_SAVE_AS), MENU_FUNC save_as, (void *)0, 0, 0 },
+	{ TEXT_(T_SAVE_URL_AS), cast_uchar "", TEXT_(T_HK_SAVE_URL_AS), MENU_FUNC menu_save_url_as, (void *)0, 0, 0 },
+	{ TEXT_(T_COPY_URL_LOCATION), cast_uchar "", TEXT_(T_HK_COPY_URL_LOCATION), MENU_FUNC copy_url_location, (void *)0, 0, 0 },
 };
 #endif
 
 static struct menu_item file_menu22[] = {
-	{ "", "", M_BAR, NULL, NULL, 0, 0} ,
-	{ TEXT_(T_KILL_BACKGROUND_CONNECTIONS), "", TEXT_(T_HK_KILL_BACKGROUND_CONNECTIONS), MENU_FUNC menu_kill_background_connections, (void *)0, 0, 0 },
-	{ TEXT_(T_KILL_ALL_CONNECTIONS), "Ctrl-S", TEXT_(T_HK_KILL_ALL_CONNECTIONS), MENU_FUNC menu_kill_all_connections, (void *)0, 0, 0 },
-	{ TEXT_(T_FLUSH_ALL_CACHES), "", TEXT_(T_HK_FLUSH_ALL_CACHES), MENU_FUNC flush_caches, (void *)0, 0, 0 },
-	{ TEXT_(T_RESOURCE_INFO), "", TEXT_(T_HK_RESOURCE_INFO), MENU_FUNC cache_inf, (void *)0, 0, 0 },
-#if 0
-	TEXT_(T_CACHE_INFO), "", TEXT_(T_HK_CACHE_INFO), MENU_FUNC list_cache, (void *)0, 0, 0,
-#endif
+	{ cast_uchar "", cast_uchar "", M_BAR, NULL, NULL, 0, 0} ,
+	{ TEXT_(T_KILL_BACKGROUND_CONNECTIONS), cast_uchar "", TEXT_(T_HK_KILL_BACKGROUND_CONNECTIONS), MENU_FUNC menu_kill_background_connections, (void *)0, 0, 0 },
+	{ TEXT_(T_KILL_ALL_CONNECTIONS), cast_uchar "", TEXT_(T_HK_KILL_ALL_CONNECTIONS), MENU_FUNC menu_kill_all_connections, (void *)0, 0, 0 },
+	{ TEXT_(T_FLUSH_ALL_CACHES), cast_uchar "", TEXT_(T_HK_FLUSH_ALL_CACHES), MENU_FUNC flush_caches, (void *)0, 0, 0 },
+	{ TEXT_(T_RESOURCE_INFO), cast_uchar "", TEXT_(T_HK_RESOURCE_INFO), MENU_FUNC resource_info_menu, (void *)0, 0, 0 },
 #ifdef LEAK_DEBUG
-	{ TEXT_(T_MEMORY_INFO), "", TEXT_(T_HK_MEMORY_INFO), MENU_FUNC memory_info, (void *)0, 0, 0 },
+	{ TEXT_(T_MEMORY_INFO), cast_uchar "", TEXT_(T_HK_MEMORY_INFO), MENU_FUNC memory_info_menu, (void *)0, 0, 0 },
 #endif
-	{ "", "", M_BAR, NULL, NULL, 0, 0 },
+	{ cast_uchar "", cast_uchar "", M_BAR, NULL, NULL, 0, 0 },
 };
 
 static struct menu_item file_menu3[] = {
-	{ "", "", M_BAR, NULL, NULL, 0, 0 },
-	{ TEXT_(T_EXIT), "q", TEXT_(T_HK_EXIT), MENU_FUNC exit_prog, (void *)0, 0, 0 },
+	{ cast_uchar "", cast_uchar "", M_BAR, NULL, NULL, 0, 0 },
+	{ TEXT_(T_EXIT), cast_uchar "q", TEXT_(T_HK_EXIT), MENU_FUNC exit_prog, (void *)0, 0, 0 },
 	{ NULL, NULL, 0, NULL, NULL, 0, 0 }
 };
 
@@ -2188,10 +2670,10 @@ static void do_file_menu(struct terminal *term, void *xxx, struct session *ses)
 	}
 	if ((o = can_open_in_new(term))) {
 		e->text = TEXT_(T_NEW_WINDOW);
-		e->rtext = o - 1 ? ">" : "";
+		e->rtext = o - 1 ? cast_uchar ">" : cast_uchar "";
 		e->hotkey = TEXT_(T_HK_NEW_WINDOW);
 		e->func = MENU_FUNC open_in_new_window;
-		e->data = send_open_new_xterm;
+		e->data = (void *)send_open_new_xterm;
 		e->in_m = o - 1;
 		e->free_i = 0;
 		e++;
@@ -2217,13 +2699,13 @@ static void do_file_menu(struct terminal *term, void *xxx, struct session *ses)
 	}
 	memcpy(e, file_menu22, sizeof(file_menu22));
 	e += sizeof(file_menu22) / sizeof(struct menu_item);
-	/*"", "", M_BAR, NULL, NULL, 0, 0,
-	TEXT_(T_OS_SHELL), "", TEXT_(T_HK_OS_SHELL), MENU_FUNC menu_shell, NULL, 0, 0,*/
+	/*cast_uchar "", cast_uchar "", M_BAR, NULL, NULL, 0, 0,
+	TEXT_(T_OS_SHELL), cast_uchar "", TEXT_(T_HK_OS_SHELL), MENU_FUNC menu_shell, NULL, 0, 0,*/
 	x = 1;
 #if 0 // focus
 	if (!anonymous && can_open_os_shell(term->environment)) {
 		e->text = TEXT_(T_OS_SHELL);
-		e->rtext = "";
+		e->rtext = cast_uchar "";
 		e->hotkey = TEXT_(T_HK_OS_SHELL);
 		e->func = MENU_FUNC menu_shell;
 		e->data = NULL;
@@ -2232,10 +2714,10 @@ static void do_file_menu(struct terminal *term, void *xxx, struct session *ses)
 		e++;
 		x = 0;
 	}
-#endif
-	if (can_resize_window(term->environment)) {
+#endif 	// focus
+	if (can_resize_window(term)) {
 		e->text = TEXT_(T_RESIZE_TERMINAL);
-		e->rtext = "";
+		e->rtext = cast_uchar "";
 		e->hotkey = TEXT_(T_HK_RESIZE_TERMINAL);
 		e->func = MENU_FUNC dlg_resize_terminal;
 		e->data = NULL;
@@ -2251,114 +2733,144 @@ static void do_file_menu(struct terminal *term, void *xxx, struct session *ses)
 }
 
 static struct menu_item view_menu[] = {
-	{ TEXT_(T_SEARCH), "[help]", TEXT_(T_HK_SEARCH), MENU_FUNC menu_for_frame, (void *)search_dlg, 0, 0 },
-	{ TEXT_(T_SEARCH_BACK), "[audio]", TEXT_(T_HK_SEARCH_BACK), MENU_FUNC menu_for_frame, (void *)search_back_dlg, 0, 0 },
-	{ TEXT_(T_FIND_NEXT), "[skip+]", TEXT_(T_HK_FIND_NEXT), MENU_FUNC menu_for_frame, (void *)find_next, 0, 0 },
-	{ TEXT_(T_FIND_PREVIOUS), "[skip-]", TEXT_(T_HK_FIND_PREVIOUS), MENU_FUNC menu_for_frame, (void *)find_next_back, 0, 0 },
-	{ "", "", M_BAR, NULL, NULL, 0, 0 },
-	{ TEXT_(T_TOGGLE_HTML_PLAIN), "[ttx]", TEXT_(T_HK_TOGGLE_HTML_PLAIN), MENU_FUNC menu_toggle, NULL, 0, 0 },
-	{ TEXT_(T_DOCUMENT_INFO), "[info]", TEXT_(T_HK_DOCUMENT_INFO), MENU_FUNC menu_doc_info, NULL, 0, 0 },
-	{ TEXT_(T_HEADER_INFO), "[cool]", TEXT_(T_HK_HEADER_INFO), MENU_FUNC menu_head_info, NULL, 0, 0 },
-//	{ TEXT_(T_FRAME_AT_FULL_SCREEN), "f", TEXT_(T_HK_FRAME_AT_FULL_SCREEN), MENU_FUNC menu_for_frame, (void *)set_frame, 0, 0 },
-	{ "", "", M_BAR, NULL, NULL, 0, 0 },
-	{ TEXT_(T_HTML_OPTIONS), "", TEXT_(T_HK_HTML_OPTIONS), MENU_FUNC menu_html_options, (void *)0, 0, 0 },
-	{ TEXT_(T_SAVE_HTML_OPTIONS), "", TEXT_(T_HK_SAVE_HTML_OPTIONS), MENU_FUNC menu_save_html_options, (void *)0, 0, 0 },
+	{ TEXT_(T_SEARCH), cast_uchar "[help]", TEXT_(T_HK_SEARCH), MENU_FUNC menu_for_frame, (void *)search_dlg, 0, 0 },
+	{ TEXT_(T_SEARCH_BACK), cast_uchar "[audio]", TEXT_(T_HK_SEARCH_BACK), MENU_FUNC menu_for_frame, (void *)search_back_dlg, 0, 0 },
+	{ TEXT_(T_FIND_NEXT), cast_uchar "[skip+]", TEXT_(T_HK_FIND_NEXT), MENU_FUNC menu_for_frame, (void *)find_next, 0, 0 },
+	{ TEXT_(T_FIND_PREVIOUS), cast_uchar "[skip-]", TEXT_(T_HK_FIND_PREVIOUS), MENU_FUNC menu_for_frame, (void *)find_next_back, 0, 0 },
+	{ cast_uchar "", cast_uchar "", M_BAR, NULL, NULL, 0, 0 },
+	{ TEXT_(T_TOGGLE_HTML_PLAIN), cast_uchar "[ttx]", TEXT_(T_HK_TOGGLE_HTML_PLAIN), MENU_FUNC menu_toggle, NULL, 0, 0 },
+	{ TEXT_(T_DOCUMENT_INFO), cast_uchar "[info]", TEXT_(T_HK_DOCUMENT_INFO), MENU_FUNC menu_doc_info, NULL, 0, 0 },
+	{ TEXT_(T_HEADER_INFO), cast_uchar "[cool]", TEXT_(T_HK_HEADER_INFO), MENU_FUNC menu_head_info, NULL, 0, 0 },
+//	{ TEXT_(T_FRAME_AT_FULL_SCREEN), cast_uchar "f", TEXT_(T_HK_FRAME_AT_FULL_SCREEN), MENU_FUNC menu_for_frame, (void *)set_frame, 0, 0 },
+	{ cast_uchar "", cast_uchar "", M_BAR, NULL, NULL, 0, 0 },
+	{ TEXT_(T_HTML_OPTIONS), cast_uchar "", TEXT_(T_HK_HTML_OPTIONS), MENU_FUNC menu_html_options, (void *)0, 0, 0 },
+	{ TEXT_(T_SAVE_HTML_OPTIONS), cast_uchar "", TEXT_(T_HK_SAVE_HTML_OPTIONS), MENU_FUNC menu_save_html_options, (void *)0, 0, 0 },
 	{ NULL, NULL, 0, NULL, NULL, 0, 0 }
 };
 
 static struct menu_item view_menu_anon[] = {
-	{ TEXT_(T_SEARCH), "", TEXT_(T_HK_SEARCH), MENU_FUNC menu_for_frame, (void *)search_dlg, 0, 0 },
-	{ TEXT_(T_SEARCH_BACK), "?", TEXT_(T_HK_SEARCH_BACK), MENU_FUNC menu_for_frame, (void *)search_back_dlg, 0, 0 },
-	{ TEXT_(T_FIND_NEXT), "n", TEXT_(T_HK_FIND_NEXT), MENU_FUNC menu_for_frame, (void *)find_next, 0, 0 },
-	{ TEXT_(T_FIND_PREVIOUS), "N", TEXT_(T_HK_FIND_PREVIOUS), MENU_FUNC menu_for_frame, (void *)find_next_back, 0, 0 },
-	{ "", "", M_BAR, NULL, NULL, 0, 0 },
-	{ TEXT_(T_TOGGLE_HTML_PLAIN), "\\", TEXT_(T_HK_TOGGLE_HTML_PLAIN), MENU_FUNC menu_toggle, NULL, 0, 0 },
-	{ TEXT_(T_DOCUMENT_INFO), "=", TEXT_(T_HK_DOCUMENT_INFO), MENU_FUNC menu_doc_info, NULL, 0, 0 },
-	{ TEXT_(T_FRAME_AT_FULL_SCREEN), "f", TEXT_(T_HK_FRAME_AT_FULL_SCREEN), MENU_FUNC menu_for_frame, (void *)set_frame, 0, 0 },
-	{ "", "", M_BAR, NULL, NULL, 0, 0 },
-	{ TEXT_(T_HTML_OPTIONS), "", TEXT_(T_HK_HTML_OPTIONS), MENU_FUNC menu_html_options, (void *)0, 0, 0 },
+	{ TEXT_(T_SEARCH), cast_uchar "/", TEXT_(T_HK_SEARCH), MENU_FUNC menu_for_frame, (void *)search_dlg, 0, 0 },
+	{ TEXT_(T_SEARCH_BACK), cast_uchar "?", TEXT_(T_HK_SEARCH_BACK), MENU_FUNC menu_for_frame, (void *)search_back_dlg, 0, 0 },
+	{ TEXT_(T_FIND_NEXT), cast_uchar "n", TEXT_(T_HK_FIND_NEXT), MENU_FUNC menu_for_frame, (void *)find_next, 0, 0 },
+	{ TEXT_(T_FIND_PREVIOUS), cast_uchar "N", TEXT_(T_HK_FIND_PREVIOUS), MENU_FUNC menu_for_frame, (void *)find_next_back, 0, 0 },
+	{ cast_uchar "", cast_uchar "", M_BAR, NULL, NULL, 0, 0 },
+	{ TEXT_(T_TOGGLE_HTML_PLAIN), cast_uchar "\\", TEXT_(T_HK_TOGGLE_HTML_PLAIN), MENU_FUNC menu_toggle, NULL, 0, 0 },
+	{ TEXT_(T_DOCUMENT_INFO), cast_uchar "=", TEXT_(T_HK_DOCUMENT_INFO), MENU_FUNC menu_doc_info, NULL, 0, 0 },
+	{ TEXT_(T_FRAME_AT_FULL_SCREEN), cast_uchar "f", TEXT_(T_HK_FRAME_AT_FULL_SCREEN), MENU_FUNC menu_for_frame, (void *)set_frame, 0, 0 },
+	{ cast_uchar "", cast_uchar "", M_BAR, NULL, NULL, 0, 0 },
+	{ TEXT_(T_HTML_OPTIONS), cast_uchar "", TEXT_(T_HK_HTML_OPTIONS), MENU_FUNC menu_html_options, (void *)0, 0, 0 },
+	{ NULL, NULL, 0, NULL, NULL, 0, 0 }
+};
+
+static struct menu_item view_menu_color[] = {
+	{ TEXT_(T_SEARCH), cast_uchar "/", TEXT_(T_HK_SEARCH), MENU_FUNC menu_for_frame, (void *)search_dlg, 0, 0 },
+	{ TEXT_(T_SEARCH_BACK), cast_uchar "?", TEXT_(T_HK_SEARCH_BACK), MENU_FUNC menu_for_frame, (void *)search_back_dlg, 0, 0 },
+	{ TEXT_(T_FIND_NEXT), cast_uchar "n", TEXT_(T_HK_FIND_NEXT), MENU_FUNC menu_for_frame, (void *)find_next, 0, 0 },
+	{ TEXT_(T_FIND_PREVIOUS), cast_uchar "N", TEXT_(T_HK_FIND_PREVIOUS), MENU_FUNC menu_for_frame, (void *)find_next_back, 0, 0 },
+	{ cast_uchar "", cast_uchar "", M_BAR, NULL, NULL, 0, 0 },
+	{ TEXT_(T_TOGGLE_HTML_PLAIN), cast_uchar "\\", TEXT_(T_HK_TOGGLE_HTML_PLAIN), MENU_FUNC menu_toggle, NULL, 0, 0 },
+	{ TEXT_(T_DOCUMENT_INFO), cast_uchar "=", TEXT_(T_HK_DOCUMENT_INFO), MENU_FUNC menu_doc_info, NULL, 0, 0 },
+	{ TEXT_(T_HEADER_INFO), cast_uchar "|", TEXT_(T_HK_HEADER_INFO), MENU_FUNC menu_head_info, NULL, 0, 0 },
+	{ TEXT_(T_FRAME_AT_FULL_SCREEN), cast_uchar "f", TEXT_(T_HK_FRAME_AT_FULL_SCREEN), MENU_FUNC menu_for_frame, (void *)set_frame, 0, 0 },
+	{ cast_uchar "", cast_uchar "", M_BAR, NULL, NULL, 0, 0 },
+	{ TEXT_(T_HTML_OPTIONS), cast_uchar "", TEXT_(T_HK_HTML_OPTIONS), MENU_FUNC menu_html_options, (void *)0, 0, 0 },
+	{ TEXT_(T_COLOR), cast_uchar "", TEXT_(T_HK_COLOR), MENU_FUNC menu_color, (void *)0, 0, 0 },
+	{ TEXT_(T_SAVE_HTML_OPTIONS), cast_uchar "", TEXT_(T_HK_SAVE_HTML_OPTIONS), MENU_FUNC menu_save_html_options, (void *)0, 0, 0 },
+	{ NULL, NULL, 0, NULL, NULL, 0, 0 }
+};
+
+static struct menu_item view_menu_anon_color[] = {
+	{ TEXT_(T_SEARCH), cast_uchar "/", TEXT_(T_HK_SEARCH), MENU_FUNC menu_for_frame, (void *)search_dlg, 0, 0 },
+	{ TEXT_(T_SEARCH_BACK), cast_uchar "?", TEXT_(T_HK_SEARCH_BACK), MENU_FUNC menu_for_frame, (void *)search_back_dlg, 0, 0 },
+	{ TEXT_(T_FIND_NEXT), cast_uchar "n", TEXT_(T_HK_FIND_NEXT), MENU_FUNC menu_for_frame, (void *)find_next, 0, 0 },
+	{ TEXT_(T_FIND_PREVIOUS), cast_uchar "N", TEXT_(T_HK_FIND_PREVIOUS), MENU_FUNC menu_for_frame, (void *)find_next_back, 0, 0 },
+	{ cast_uchar "", cast_uchar "", M_BAR, NULL, NULL, 0, 0 },
+	{ TEXT_(T_TOGGLE_HTML_PLAIN), cast_uchar "\\", TEXT_(T_HK_TOGGLE_HTML_PLAIN), MENU_FUNC menu_toggle, NULL, 0, 0 },
+	{ TEXT_(T_DOCUMENT_INFO), cast_uchar "=", TEXT_(T_HK_DOCUMENT_INFO), MENU_FUNC menu_doc_info, NULL, 0, 0 },
+	{ TEXT_(T_FRAME_AT_FULL_SCREEN), cast_uchar "f", TEXT_(T_HK_FRAME_AT_FULL_SCREEN), MENU_FUNC menu_for_frame, (void *)set_frame, 0, 0 },
+	{ cast_uchar "", cast_uchar "", M_BAR, NULL, NULL, 0, 0 },
+	{ TEXT_(T_HTML_OPTIONS), cast_uchar "", TEXT_(T_HK_HTML_OPTIONS), MENU_FUNC menu_html_options, (void *)0, 0, 0 },
+	{ TEXT_(T_COLOR), cast_uchar "", TEXT_(T_HK_COLOR), MENU_FUNC menu_color, (void *)0, 0, 0 },
 	{ NULL, NULL, 0, NULL, NULL, 0, 0 }
 };
 
 static struct menu_item help_menu[] = {
-	{ TEXT_(T_ABOUT), "", TEXT_(T_HK_ABOUT), MENU_FUNC menu_about, (void *)0, 0, 0 },
-	{ TEXT_(T_KEYS), "F1", TEXT_(T_HK_KEYS), MENU_FUNC menu_keys, (void *)0, 0, 0 },
-	{ TEXT_(T_MANUAL), "", TEXT_(T_HK_MANUAL), MENU_FUNC menu_manual, (void *)0, 0, 0 },
-	{ TEXT_(T_HOMEPAGE), "", TEXT_(T_HK_HOMEPAGE), MENU_FUNC menu_homepage, (void *)0, 0, 0 },
-	{ TEXT_(T_COPYING), "", TEXT_(T_HK_COPYING), MENU_FUNC menu_copying, (void *)0, 0, 0 },
+	{ TEXT_(T_ABOUT), cast_uchar "", TEXT_(T_HK_ABOUT), MENU_FUNC menu_about, (void *)0, 0, 0 },
+	{ TEXT_(T_KEYS), cast_uchar "F1", TEXT_(T_HK_KEYS), MENU_FUNC menu_keys, (void *)0, 0, 0 },
+	{ TEXT_(T_MANUAL), cast_uchar "", TEXT_(T_HK_MANUAL), MENU_FUNC menu_manual, (void *)0, 0, 0 },
+	{ TEXT_(T_HOMEPAGE), cast_uchar "", TEXT_(T_HK_HOMEPAGE), MENU_FUNC menu_homepage, (void *)0, 0, 0 },
+	{ TEXT_(T_COPYING), cast_uchar "", TEXT_(T_HK_COPYING), MENU_FUNC menu_copying, (void *)0, 0, 0 },
 	{ NULL, NULL, 0, NULL, NULL, 0, 0 }
 };
 
 #ifdef G
 static struct menu_item help_menu_g[] = {
-	{ TEXT_(T_ABOUT), "", TEXT_(T_HK_ABOUT), MENU_FUNC menu_about, (void *)0, 0, 0 },
-	{ TEXT_(T_KEYS), "F1", TEXT_(T_HK_KEYS), MENU_FUNC menu_keys, (void *)0, 0, 0 },
-	{ TEXT_(T_MANUAL), "", TEXT_(T_HK_MANUAL), MENU_FUNC menu_manual, (void *)0, 0, 0 },
-	{ TEXT_(T_HOMEPAGE), "", TEXT_(T_HK_HOMEPAGE), MENU_FUNC menu_homepage, (void *)0, 0, 0 },
-	{ TEXT_(T_CALIBRATION), "", TEXT_(T_HK_CALIBRATION), MENU_FUNC menu_calibration, (void *)0, 0, 0 },
-	{ TEXT_(T_COPYING), "", TEXT_(T_HK_COPYING), MENU_FUNC menu_copying, (void *)0, 0, 0 },
+	{ TEXT_(T_ABOUT), cast_uchar "", TEXT_(T_HK_ABOUT), MENU_FUNC menu_about, (void *)0, 0, 0 },
+	{ TEXT_(T_KEYS), cast_uchar "F1", TEXT_(T_HK_KEYS), MENU_FUNC menu_keys, (void *)0, 0, 0 },
+	{ TEXT_(T_MANUAL), cast_uchar "", TEXT_(T_HK_MANUAL), MENU_FUNC menu_manual, (void *)0, 0, 0 },
+	{ TEXT_(T_HOMEPAGE), cast_uchar "", TEXT_(T_HK_HOMEPAGE), MENU_FUNC menu_homepage, (void *)0, 0, 0 },
+	{ TEXT_(T_CALIBRATION), cast_uchar "", TEXT_(T_HK_CALIBRATION), MENU_FUNC menu_calibration, (void *)0, 0, 0 },
+	{ TEXT_(T_COPYING), cast_uchar "", TEXT_(T_HK_COPYING), MENU_FUNC menu_copying, (void *)0, 0, 0 },
 	{ NULL, NULL, 0, NULL, NULL, 0, 0 }
 };
 #endif
 
 static struct menu_item setup_menu[] = {
-	{ TEXT_(T_LANGUAGE), ">", TEXT_(T_HK_LANGUAGE), MENU_FUNC menu_language_list, NULL, 1, 0 },
-	{ TEXT_(T_CHARACTER_SET), ">", TEXT_(T_HK_CHARACTER_SET), MENU_FUNC charset_list, (void *)1, 1, 0 },
-	{ TEXT_(T_TERMINAL_OPTIONS), "", TEXT_(T_HK_TERMINAL_OPTIONS), MENU_FUNC terminal_options, NULL, 0, 0 },
-	{ TEXT_(T_NETWORK_OPTIONS), "", TEXT_(T_HK_NETWORK_OPTIONS), MENU_FUNC net_options, NULL, 0, 0 },
+	{ TEXT_(T_LANGUAGE), cast_uchar ">", TEXT_(T_HK_LANGUAGE), MENU_FUNC menu_language_list, NULL, 1, 0 },
+	{ TEXT_(T_CHARACTER_SET), cast_uchar ">", TEXT_(T_HK_CHARACTER_SET), MENU_FUNC charset_list, (void *)1, 1, 0 },
+	{ TEXT_(T_TERMINAL_OPTIONS), cast_uchar "", TEXT_(T_HK_TERMINAL_OPTIONS), MENU_FUNC terminal_options, NULL, 0, 0 },
+	{ TEXT_(T_NETWORK_OPTIONS), cast_uchar "", TEXT_(T_HK_NETWORK_OPTIONS), MENU_FUNC net_options, NULL, 0, 0 },
 #ifdef JS
-	{ TEXT_(T_JAVASCRIPT_OPTIONS),"", TEXT_(T_HK_JAVASCRIPT_OPTIONS), MENU_FUNC javascript_options, NULL, 0, 0 },
+	{ TEXT_(T_JAVASCRIPT_OPTIONS), cast_uchar "", TEXT_(T_HK_JAVASCRIPT_OPTIONS), MENU_FUNC javascript_options, NULL, 0, 0 },
 #endif
-	{ TEXT_(T_MISCELANEOUS_OPTIONS),"", TEXT_(T_HK_MISCELANEOUS_OPTIONS), MENU_FUNC miscelaneous_options, NULL, 0, 0 },
-	{ TEXT_(T_CACHE), "", TEXT_(T_HK_CACHE), MENU_FUNC cache_opt, NULL, 0, 0 },
-	{ TEXT_(T_MAIL_AND_TELNEL), "", TEXT_(T_HK_MAIL_AND_TELNEL), MENU_FUNC net_programs, NULL, 0, 0 },
-	{ TEXT_(T_ASSOCIATIONS), "", TEXT_(T_HK_ASSOCIATIONS), MENU_FUNC menu_assoc_manager, NULL, 0, 0 },
-	{ TEXT_(T_FILE_EXTENSIONS), "", TEXT_(T_HK_FILE_EXTENSIONS), MENU_FUNC menu_ext_manager, NULL, 0, 0 },
-	{ "", "", M_BAR, NULL, NULL, 0, 0 },
-	{ TEXT_(T_SAVE_OPTIONS), "", TEXT_(T_HK_SAVE_OPTIONS), MENU_FUNC write_config, NULL, 0, 0 },
+	{ TEXT_(T_MISCELANEOUS_OPTIONS), cast_uchar "", TEXT_(T_HK_MISCELANEOUS_OPTIONS), MENU_FUNC miscelaneous_options, NULL, 0, 0 },
+	{ TEXT_(T_CACHE), cast_uchar "", TEXT_(T_HK_CACHE), MENU_FUNC cache_opt, NULL, 0, 0 },
+	{ TEXT_(T_MAIL_AND_TELNEL), cast_uchar "", TEXT_(T_HK_MAIL_AND_TELNEL), MENU_FUNC net_programs, NULL, 0, 0 },
+	{ TEXT_(T_ASSOCIATIONS), cast_uchar "", TEXT_(T_HK_ASSOCIATIONS), MENU_FUNC menu_assoc_manager, NULL, 0, 0 },
+	{ TEXT_(T_FILE_EXTENSIONS), cast_uchar "", TEXT_(T_HK_FILE_EXTENSIONS), MENU_FUNC menu_ext_manager, NULL, 0, 0 },
+	{ TEXT_(T_BLOCK_LIST), cast_uchar "", TEXT_(T_HK_BLOCK_LIST), MENU_FUNC block_manager, NULL, 0, 0 },
+	{ cast_uchar "", cast_uchar "", M_BAR, NULL, NULL, 0, 0 },
+	{ TEXT_(T_SAVE_OPTIONS), cast_uchar "", TEXT_(T_HK_SAVE_OPTIONS), MENU_FUNC write_config, NULL, 0, 0 },
 	{ NULL, NULL, 0, NULL, NULL, 0, 0 }
 };
 
 static struct menu_item setup_menu_anon[] = {
-	{ TEXT_(T_LANGUAGE), ">", TEXT_(T_HK_LANGUAGE), MENU_FUNC menu_language_list, NULL, 1, 0 },
-	{ TEXT_(T_CHARACTER_SET), ">", TEXT_(T_HK_CHARACTER_SET), MENU_FUNC charset_list, (void *)1, 1, 0 },
-	{ TEXT_(T_TERMINAL_OPTIONS), "", TEXT_(T_HK_TERMINAL_OPTIONS), MENU_FUNC terminal_options, NULL, 0, 0 },
-	/*{ TEXT_(T_NETWORK_OPTIONS), "", TEXT_(T_HK_NETWORK_OPTIONS), MENU_FUNC net_options, NULL, 0, 0 },*/
+	{ TEXT_(T_LANGUAGE), cast_uchar ">", TEXT_(T_HK_LANGUAGE), MENU_FUNC menu_language_list, NULL, 1, 0 },
+	{ TEXT_(T_CHARACTER_SET), cast_uchar ">", TEXT_(T_HK_CHARACTER_SET), MENU_FUNC charset_list, (void *)1, 1, 0 },
+	{ TEXT_(T_TERMINAL_OPTIONS), cast_uchar "", TEXT_(T_HK_TERMINAL_OPTIONS), MENU_FUNC terminal_options, NULL, 0, 0 },
 #ifdef JS
-	{ TEXT_(T_JAVASCRIPT_OPTIONS),"", TEXT_(T_HK_JAVASCRIPT_OPTIONS), MENU_FUNC javascript_options, NULL, 0, 0 },
+	{ TEXT_(T_JAVASCRIPT_OPTIONS), cast_uchar "", TEXT_(T_HK_JAVASCRIPT_OPTIONS), MENU_FUNC javascript_options, NULL, 0, 0 },
 #endif
-	/*{ TEXT_(T_MISCELANEOUS_OPTIONS),"", TEXT_(T_HK_MISCELANEOUS_OPTIONS), MENU_FUNC miscelaneous_options, NULL, 0, 0 },*/
 	{ NULL, NULL, 0, NULL, NULL, 0, 0 }
 };
 
 #ifdef G
 
 static struct menu_item setup_menu_g[] = {
-	{ TEXT_(T_LANGUAGE), ">", TEXT_(T_HK_LANGUAGE), MENU_FUNC menu_language_list, NULL, 1, 0 },
-	{ TEXT_(T_VIDEO_OPTIONS), "", TEXT_(T_HK_VIDEO_OPTIONS), MENU_FUNC video_options, NULL, 0, 0 },
-	{ TEXT_(T_NETWORK_OPTIONS), "", TEXT_(T_HK_NETWORK_OPTIONS), MENU_FUNC net_options, NULL, 0, 0 },
+	{ TEXT_(T_LANGUAGE), cast_uchar ">", TEXT_(T_HK_LANGUAGE), MENU_FUNC menu_language_list, NULL, 1, 0 },
+	{ TEXT_(T_VIDEO_OPTIONS), cast_uchar "", TEXT_(T_HK_VIDEO_OPTIONS), MENU_FUNC video_options, NULL, 0, 0 },
+	{ TEXT_(T_NETWORK_OPTIONS), cast_uchar "", TEXT_(T_HK_NETWORK_OPTIONS), MENU_FUNC net_options, NULL, 0, 0 },
 #ifdef JS
-	{ TEXT_(T_JAVASCRIPT_OPTIONS),"", TEXT_(T_HK_JAVASCRIPT_OPTIONS), MENU_FUNC javascript_options, NULL, 0, 0 },
+	{ TEXT_(T_JAVASCRIPT_OPTIONS), cast_uchar "", TEXT_(T_HK_JAVASCRIPT_OPTIONS), MENU_FUNC javascript_options, NULL, 0, 0 },
 #endif
-	{ TEXT_(T_MISCELANEOUS_OPTIONS),"", TEXT_(T_HK_MISCELANEOUS_OPTIONS), MENU_FUNC miscelaneous_options, NULL, 0, 0 },
-	{ TEXT_(T_CACHE), "", TEXT_(T_HK_CACHE), MENU_FUNC cache_opt, NULL, 0, 0 },
-	{ TEXT_(T_MAIL_TELNET_AND_SHELL), "", TEXT_(T_HK_MAIL_AND_TELNEL), MENU_FUNC net_programs, NULL, 0, 0 },
-	{ TEXT_(T_ASSOCIATIONS), "", TEXT_(T_HK_ASSOCIATIONS), MENU_FUNC menu_assoc_manager, NULL, 0, 0 },
-	{ TEXT_(T_FILE_EXTENSIONS), "", TEXT_(T_HK_FILE_EXTENSIONS), MENU_FUNC menu_ext_manager, NULL, 0, 0 },
-	{ TEXT_(T_BLOCK_LIST), "", TEXT_(T_HK_BLOCK_LIST), MENU_FUNC block_manager, NULL, 0, 0 },
-	{ "", "", M_BAR, NULL, NULL, 0, 0 },
-	{ TEXT_(T_SAVE_OPTIONS), "", TEXT_(T_HK_SAVE_OPTIONS), MENU_FUNC write_config, NULL, 0, 0 },
+	{ TEXT_(T_MISCELANEOUS_OPTIONS), cast_uchar "", TEXT_(T_HK_MISCELANEOUS_OPTIONS), MENU_FUNC miscelaneous_options, NULL, 0, 0 },
+	{ TEXT_(T_CACHE), cast_uchar "", TEXT_(T_HK_CACHE), MENU_FUNC cache_opt, NULL, 0, 0 },
+	{ TEXT_(T_MAIL_TELNET_AND_SHELL), cast_uchar "", TEXT_(T_HK_MAIL_AND_TELNEL), MENU_FUNC net_programs, NULL, 0, 0 },
+	{ TEXT_(T_ASSOCIATIONS), cast_uchar "", TEXT_(T_HK_ASSOCIATIONS), MENU_FUNC menu_assoc_manager, NULL, 0, 0 },
+	{ TEXT_(T_FILE_EXTENSIONS), cast_uchar "", TEXT_(T_HK_FILE_EXTENSIONS), MENU_FUNC menu_ext_manager, NULL, 0, 0 },
+	{ TEXT_(T_BLOCK_LIST), cast_uchar "", TEXT_(T_HK_BLOCK_LIST), MENU_FUNC block_manager, NULL, 0, 0 },
+	{ cast_uchar "", cast_uchar "", M_BAR, NULL, NULL, 0, 0 },
+	{ TEXT_(T_SAVE_OPTIONS), cast_uchar "", TEXT_(T_HK_SAVE_OPTIONS), MENU_FUNC write_config, NULL, 0, 0 },
 	{ NULL, NULL, 0, NULL, NULL, 0, 0 }
 };
 
 static struct menu_item setup_menu_anon_g[] = {
-	{ TEXT_(T_LANGUAGE), ">", TEXT_(T_HK_LANGUAGE), MENU_FUNC menu_language_list, NULL, 1, 0 },
-	{ TEXT_(T_VIDEO_OPTIONS), "", TEXT_(T_HK_VIDEO_OPTIONS), MENU_FUNC video_options, NULL, 0, 0 },
-	/*{ TEXT_(T_NETWORK_OPTIONS), "", TEXT_(T_HK_NETWORK_OPTIONS), MENU_FUNC net_options, NULL, 0, 0 },*/
+	{ TEXT_(T_LANGUAGE), cast_uchar ">", TEXT_(T_HK_LANGUAGE), MENU_FUNC menu_language_list, NULL, 1, 0 },
+	{ TEXT_(T_VIDEO_OPTIONS), cast_uchar "", TEXT_(T_HK_VIDEO_OPTIONS), MENU_FUNC video_options, NULL, 0, 0 },
 #ifdef JS
-	{ TEXT_(T_JAVASCRIPT_OPTIONS),"", TEXT_(T_HK_JAVASCRIPT_OPTIONS), MENU_FUNC javascript_options, NULL, 0, 0 },
+	{ TEXT_(T_JAVASCRIPT_OPTIONS), cast_uchar "", TEXT_(T_HK_JAVASCRIPT_OPTIONS), MENU_FUNC javascript_options, NULL, 0, 0 },
 #endif
-	{ TEXT_(T_MISCELANEOUS_OPTIONS),"", TEXT_(T_HK_MISCELANEOUS_OPTIONS), MENU_FUNC miscelaneous_options, NULL, 0, 0 },
+	{ TEXT_(T_MISCELANEOUS_OPTIONS), cast_uchar "", TEXT_(T_HK_MISCELANEOUS_OPTIONS), MENU_FUNC miscelaneous_options, NULL, 0, 0 },
 	{ NULL, NULL, 0, NULL, NULL, 0, 0 }
 };
 
@@ -2366,39 +2878,47 @@ static struct menu_item setup_menu_anon_g[] = {
 
 static void do_view_menu(struct terminal *term, void *xxx, struct session *ses)
 {
-	if (!anonymous) do_menu(term, view_menu, ses);
-	else do_menu(term, view_menu_anon, ses);
+	if (F || term->spec->col) {
+		if (!anonymous) do_menu(term, view_menu_color, ses);
+		else do_menu(term, view_menu_anon_color, ses);
+	} else {
+		if (!anonymous) do_menu(term, view_menu, ses);
+		else do_menu(term, view_menu_anon, ses);
+	}
 }
 
 static void do_setup_menu(struct terminal *term, void *xxx, struct session *ses)
 {
 #ifdef G
-	if (F) if (!anonymous) do_menu(term, setup_menu_g, ses);
-	else do_menu(term, setup_menu_anon_g, ses);
-	else
+	if (F) {
+		if (!anonymous) do_menu(term, setup_menu_g, ses);
+		else do_menu(term, setup_menu_anon_g, ses);
+	} else
 #endif
-	if (!anonymous) do_menu(term, setup_menu, ses);
-	else do_menu(term, setup_menu_anon, ses);
+	{
+		if (!anonymous) do_menu(term, setup_menu, ses);
+		else do_menu(term, setup_menu_anon, ses);
+	}
 }
 
 static struct menu_item main_menu[] = {
-	{ TEXT_(T_FILE), "", TEXT_(T_HK_FILE), MENU_FUNC do_file_menu, NULL, 1, 1 },
-	{ TEXT_(T_VIEW), "", TEXT_(T_HK_VIEW), MENU_FUNC do_view_menu, NULL, 1, 1 },
-	{ TEXT_(T_LINK), "", TEXT_(T_HK_LINK), MENU_FUNC link_menu, NULL, 1, 1 },
-	{ TEXT_(T_DOWNLOADS), "", TEXT_(T_HK_DOWNLOADS), MENU_FUNC downloads_menu, NULL, 1, 1 },
-	{ TEXT_(T_SETUP), "", TEXT_(T_HK_SETUP), MENU_FUNC do_setup_menu, NULL, 1, 1 },
-	{ TEXT_(T_HELP), "", TEXT_(T_HK_HELP), MENU_FUNC do_menu, help_menu, 1, 1 },
+	{ TEXT_(T_FILE), cast_uchar "", TEXT_(T_HK_FILE), MENU_FUNC do_file_menu, NULL, 1, 1 },
+	{ TEXT_(T_VIEW), cast_uchar "", TEXT_(T_HK_VIEW), MENU_FUNC do_view_menu, NULL, 1, 1 },
+	{ TEXT_(T_LINK), cast_uchar "", TEXT_(T_HK_LINK), MENU_FUNC link_menu, NULL, 1, 1 },
+	{ TEXT_(T_DOWNLOADS), cast_uchar "", TEXT_(T_HK_DOWNLOADS), MENU_FUNC downloads_menu, NULL, 1, 1 },
+	{ TEXT_(T_SETUP), cast_uchar "", TEXT_(T_HK_SETUP), MENU_FUNC do_setup_menu, NULL, 1, 1 },
+	{ TEXT_(T_HELP), cast_uchar "", TEXT_(T_HK_HELP), MENU_FUNC do_menu, help_menu, 1, 1 },
 	{ NULL, NULL, 0, NULL, NULL, 0, 0 }
 };
 
 #ifdef G
 static struct menu_item main_menu_g[] = {
-	{ TEXT_(T_FILE), "", TEXT_(T_HK_FILE), MENU_FUNC do_file_menu, NULL, 1, 1 },
-	{ TEXT_(T_VIEW), "", TEXT_(T_HK_VIEW), MENU_FUNC do_view_menu, NULL, 1, 1 },
-	{ TEXT_(T_LINK), "", TEXT_(T_HK_LINK), MENU_FUNC link_menu, NULL, 1, 1 },
-	{ TEXT_(T_DOWNLOADS), "", TEXT_(T_HK_DOWNLOADS), MENU_FUNC downloads_menu, NULL, 1, 1 },
-	{ TEXT_(T_SETUP), "", TEXT_(T_HK_SETUP), MENU_FUNC do_setup_menu, NULL, 1, 1 },
-	{ TEXT_(T_HELP), "", TEXT_(T_HK_HELP), MENU_FUNC do_menu, help_menu_g, 1, 1 },
+	{ TEXT_(T_FILE), cast_uchar "", TEXT_(T_HK_FILE), MENU_FUNC do_file_menu, NULL, 1, 1 },
+	{ TEXT_(T_VIEW), cast_uchar "", TEXT_(T_HK_VIEW), MENU_FUNC do_view_menu, NULL, 1, 1 },
+	{ TEXT_(T_LINK), cast_uchar "", TEXT_(T_HK_LINK), MENU_FUNC link_menu, NULL, 1, 1 },
+	{ TEXT_(T_DOWNLOADS), cast_uchar "", TEXT_(T_HK_DOWNLOADS), MENU_FUNC downloads_menu, NULL, 1, 1 },
+	{ TEXT_(T_SETUP), cast_uchar "", TEXT_(T_HK_SETUP), MENU_FUNC do_setup_menu, NULL, 1, 1 },
+	{ TEXT_(T_HELP), cast_uchar "", TEXT_(T_HK_HELP), MENU_FUNC do_menu, help_menu_g, 1, 1 },
 	{ NULL, NULL, 0, NULL, NULL, 0, 0 }
 };
 #endif
@@ -2420,22 +2940,22 @@ void dialog_goto_url(struct session *ses, unsigned char *url)
 
 void dialog_save_url(struct session *ses)
 {
-	input_field(ses->term, NULL, TEXT_(T_SAVE_URL), TEXT_(T_ENTER_URL), ses, &goto_url_history, MAX_INPUT_URL_LEN, "", 0, 0, NULL, TEXT_(T_OK), (void (*)(void *, unsigned char *)) save_url, TEXT_(T_CANCEL), NULL, NULL);
+	input_field(ses->term, NULL, TEXT_(T_SAVE_URL), TEXT_(T_ENTER_URL), ses, &goto_url_history, MAX_INPUT_URL_LEN, cast_uchar "", 0, 0, NULL, TEXT_(T_OK), (void (*)(void *, unsigned char *)) save_url, TEXT_(T_CANCEL), NULL, NULL);
 }
 
 
-struct does_file_exist_s{
-	void (*fn)(void *, unsigned char *);
+struct does_file_exist_s {
+	void (*fn)(void *, unsigned char *, int);
 	void (*cancel)(void *);
+	int flags;
 	struct session *ses;
 	unsigned char *file;
 	unsigned char *url;
 	unsigned char *head;
 };
 
-static void does_file_exist_ok(void *data)
+static void does_file_exist_ok(struct does_file_exist_s *h, int mode)
 {
-	struct does_file_exist_s *h=(struct does_file_exist_s *)data;
 	if (h->fn) {
 		unsigned char *d = h->file;
 		unsigned char *dd;
@@ -2444,8 +2964,19 @@ static void does_file_exist_ok(void *data)
 			memcpy(download_dir, h->file, d - h->file);
 			download_dir[d - h->file] = 0;
 		}
-		h->fn(h->ses, h->file);
+		h->fn(h->ses, h->file, mode);
 	}
+}
+
+
+static void does_file_exist_continue(void *data)
+{
+	does_file_exist_ok(data, DOWNLOAD_CONTINUE);
+}
+
+static void does_file_exist_overwrite(void *data)
+{
+	does_file_exist_ok(data, DOWNLOAD_OVERWRITE);
 }
 
 static void does_file_exist_cancel(void *data)
@@ -2457,69 +2988,104 @@ static void does_file_exist_cancel(void *data)
 static void does_file_exist_rename(void *data)
 {
 	struct does_file_exist_s *h=(struct does_file_exist_s *)data;
-	query_file(h->ses, h->url, h->head, (void (*)(struct session *, unsigned char *))h->fn, (void (*)(struct session *))h->cancel);
+	query_file(h->ses, h->url, h->head, (void (*)(struct session *, unsigned char *, int))h->fn, (void (*)(struct session *))h->cancel, h->flags);
 }
 
 static void does_file_exist(struct does_file_exist_s *d, unsigned char *file)
 {
 	unsigned char *f;
 	unsigned char *wd;
-	struct session *ses=d->ses;
-	struct stat s;
+	struct session *ses = d->ses;
+	struct stat st;
 	int r;
 	struct does_file_exist_s *h;
+	unsigned char *msg;
+	int file_type = 0;
 
-	h=mem_alloc(sizeof(struct does_file_exist_s));
-	h->fn=d->fn;
-	h->cancel=d->cancel;
-	h->ses=ses;
-	h->file=stracpy(file);
-	h->url=stracpy(d->url);
+	h = mem_alloc(sizeof(struct does_file_exist_s));
+	h->fn = d->fn;
+	h->cancel = d->cancel;
+	h->flags = d->flags;
+	h->ses = ses;
+	h->file = stracpy(file);
+	h->url = stracpy(d->url);
 	h->head = stracpy(d->head);
 
+	if (!*file) {
+		does_file_exist_rename(h);
+		goto free_h_ret;
+	}
+
 	if (test_abort_downloads_to_file(file, ses->term->cwd, 0)) {
-		msg_box(
-			ses->term,
-			getml(h->file, h->url, h, h->head, NULL),
-			TEXT_(T_FILE_ALREADY_EXISTS),
-			AL_CENTER|AL_EXTD_TEXT,
-			TEXT_(T_FILE), " ", h->file, " ", TEXT_(T_ALREADY_EXISTS_AS_DOWNLOAD), " ", TEXT_(T_DO_YOU_WISH_TO_OVERWRITE), NULL,
-			h,
-			3,
-			TEXT_(T_OVERWRITE), does_file_exist_ok, B_ENTER,
-			TEXT_(T_CANCEL), does_file_exist_cancel, B_ESC,
-			TEXT_(T_RENAME), does_file_exist_rename, NULL
-		);
-		return;
+		msg = TEXT_(T_ALREADY_EXISTS_AS_DOWNLOAD);
+		goto display_msgbox;
 	}
 	
 	wd = get_cwd();
 	set_cwd(ses->term->cwd);
 	f = translate_download_file(file);
-	r = stat(f, &s);
+	EINTRLOOP(r, stat(cast_const_char f, &st));
 	mem_free(f);
 	if (wd) set_cwd(wd), mem_free(wd);
-	if (r)
-	{
-		does_file_exist_ok(h);
+	if (r) {
+		does_file_exist_ok(h, DOWNLOAD_DEFAULT);
+free_h_ret:
 		if (h->head) mem_free(h->head);
 		mem_free(h->file);
 		mem_free(h->url);
 		mem_free(h);
 		return;
 	}
-	msg_box(
-		ses->term,
-		getml(h->file, h->url, h, h->head, NULL),
-		TEXT_(T_FILE_ALREADY_EXISTS),
-		AL_CENTER|AL_EXTD_TEXT, 
-		TEXT_(T_FILE), " ", h->file, " ", TEXT_(T_ALREADY_EXISTS), " ", TEXT_(T_DO_YOU_WISH_TO_OVERWRITE), NULL,
-		h,
-		3,
-		TEXT_(T_OVERWRITE), does_file_exist_ok, B_ENTER,
-		TEXT_(T_CANCEL), does_file_exist_cancel, B_ESC,
-		TEXT_(T_RENAME), does_file_exist_rename, NULL
-	);
+
+	if (!S_ISREG(st.st_mode)) {
+		if (S_ISDIR(st.st_mode))
+			file_type = 2;
+		else
+			file_type = 1;
+	}
+
+	msg = TEXT_(T_ALREADY_EXISTS);
+	display_msgbox:
+	if (file_type == 2) {
+		msg_box(
+			ses->term,
+			getml(h, h->file, h->url, h->head, NULL),
+			TEXT_(T_FILE_ALREADY_EXISTS),
+			AL_CENTER|AL_EXTD_TEXT, 
+			TEXT_(T_DIRECTORY), cast_uchar " ", h->file, cast_uchar " ", TEXT_(T_ALREADY_EXISTS), NULL,
+			h,
+			2,
+			TEXT_(T_RENAME), does_file_exist_rename, B_ENTER,
+			TEXT_(T_CANCEL), does_file_exist_cancel, B_ESC
+		);
+	} else if (file_type || h->flags != DOWNLOAD_CONTINUE) {
+		msg_box(
+			ses->term,
+			getml(h, h->file, h->url, h->head, NULL),
+			TEXT_(T_FILE_ALREADY_EXISTS),
+			AL_CENTER|AL_EXTD_TEXT, 
+			TEXT_(T_FILE), cast_uchar " ", h->file, cast_uchar " ", msg, cast_uchar " ", TEXT_(T_DO_YOU_WISH_TO_OVERWRITE), NULL,
+			h,
+			3,
+			TEXT_(T_OVERWRITE), does_file_exist_overwrite, B_ENTER,
+			TEXT_(T_RENAME), does_file_exist_rename, 0,
+			TEXT_(T_CANCEL), does_file_exist_cancel, B_ESC
+		);
+	} else {
+		msg_box(
+			ses->term,
+			getml(h, h->file, h->url, h->head, NULL),
+			TEXT_(T_FILE_ALREADY_EXISTS),
+			AL_CENTER|AL_EXTD_TEXT, 
+			TEXT_(T_FILE), cast_uchar " ", h->file, cast_uchar " ", msg, cast_uchar " ", TEXT_(T_DO_YOU_WISH_TO_CONTINUE), NULL,
+			h,
+			4,
+			TEXT_(T_CONTINUE), does_file_exist_continue, B_ENTER,
+			TEXT_(T_OVERWRITE), does_file_exist_overwrite, 0,
+			TEXT_(T_RENAME), does_file_exist_rename, 0,
+			TEXT_(T_CANCEL), does_file_exist_cancel, B_ESC
+		);
+	}
 }
 
 
@@ -2532,29 +3098,30 @@ static void query_file_cancel(struct does_file_exist_s *d)
 }
 
 
-void query_file(struct session *ses, unsigned char *url, unsigned char *head, void (*std)(struct session *, unsigned char *), void (*cancel)(struct session *))
+void query_file(struct session *ses, unsigned char *url, unsigned char *head, void (*fn)(struct session *, unsigned char *, int), void (*cancel)(struct session *), int flags)
 {
 	unsigned char *file, *def;
 	int dfl = 0;
 	struct does_file_exist_s *h;
 
-	h=mem_alloc(sizeof(struct does_file_exist_s));
+	h = mem_alloc(sizeof(struct does_file_exist_s));
 
 	file = get_filename_from_url(url, head, 0);
 	def = init_str();
 	add_to_str(&def, &dfl, download_dir);
-	if (*def && !dir_sep(def[strlen(def) - 1])) add_chr_to_str(&def, &dfl, '/');
+	if (*def && !dir_sep(def[strlen(cast_const_char def) - 1])) add_chr_to_str(&def, &dfl, '/');
 	add_to_str(&def, &dfl, file);
 	mem_free(file);
 
-	h->fn=(void (*)(void *, unsigned char *))std;
-	h->cancel=(void (*)(void *))cancel;
-	h->ses=ses;
-	h->file=NULL;
-	h->url=stracpy(url);
+	h->fn = (void (*)(void *, unsigned char *, int))fn;
+	h->cancel = (void (*)(void *))cancel;
+	h->flags = flags;
+	h->ses = ses;
+	h->file = NULL;
+	h->url = stracpy(url);
 	h->head = stracpy(head);
 
-	input_field(ses->term, getml(h->url, h, h->head, NULL), TEXT_(T_DOWNLOAD), TEXT_(T_SAVE_TO_FILE), h, &file_history, MAX_INPUT_URL_LEN, def, 0, 0, NULL, TEXT_(T_OK), (void (*)(void *, unsigned char *))does_file_exist, TEXT_(T_CANCEL), (void (*)(void *))query_file_cancel, NULL);
+	input_field(ses->term, getml(h, h->url, h->head, NULL), TEXT_(T_DOWNLOAD), TEXT_(T_SAVE_TO_FILE), h, &file_history, MAX_INPUT_URL_LEN, def, 0, 0, NULL, TEXT_(T_OK), (void (*)(void *, unsigned char *))does_file_exist, TEXT_(T_CANCEL), (void (*)(void *))query_file_cancel, NULL);
 	mem_free(def);
 }
 
@@ -2562,12 +3129,20 @@ static struct history search_history = { 0, { &search_history.items, &search_his
 
 void search_back_dlg(struct session *ses, struct f_data_c *f, int a)
 {
-	input_field(ses->term, NULL, TEXT_(T_SEARCH_BACK), TEXT_(T_SEARCH_FOR_TEXT), ses, &search_history, MAX_INPUT_URL_LEN, "", 0, 0, NULL, TEXT_(T_OK), (void (*)(void *, unsigned char *)) search_for_back, TEXT_(T_CANCEL), NULL, NULL);
+	if (list_empty(ses->history) || !f->f_data || !f->vs) {
+		msg_box(ses->term, NULL, TEXT_(T_SEARCH), AL_LEFT, TEXT_(T_YOU_ARE_NOWHERE), NULL, 1, TEXT_(T_OK), NULL, B_ENTER | B_ESC);
+		return;
+	}
+	input_field(ses->term, NULL, TEXT_(T_SEARCH_BACK), TEXT_(T_SEARCH_FOR_TEXT), ses, &search_history, MAX_INPUT_URL_LEN, cast_uchar "", 0, 0, NULL, TEXT_(T_OK), (void (*)(void *, unsigned char *)) search_for_back, TEXT_(T_CANCEL), NULL, NULL);
 }
 
 void search_dlg(struct session *ses, struct f_data_c *f, int a)
 {
-	input_field(ses->term, NULL, TEXT_(T_SEARCH), TEXT_(T_SEARCH_FOR_TEXT), ses, &search_history, MAX_INPUT_URL_LEN, "", 0, 0, NULL, TEXT_(T_OK), (void (*)(void *, unsigned char *)) search_for, TEXT_(T_CANCEL), NULL, NULL);
+	if (list_empty(ses->history) || !f->f_data || !f->vs) {
+		msg_box(ses->term, NULL, TEXT_(T_SEARCH_FOR_TEXT), AL_LEFT, TEXT_(T_YOU_ARE_NOWHERE), NULL, 1, TEXT_(T_OK), NULL, B_ENTER | B_ESC);
+		return;
+	}
+	input_field(ses->term, NULL, TEXT_(T_SEARCH), TEXT_(T_SEARCH_FOR_TEXT), ses, &search_history, MAX_INPUT_URL_LEN, cast_uchar "", 0, 0, NULL, TEXT_(T_OK), (void (*)(void *, unsigned char *)) search_for, TEXT_(T_CANCEL), NULL, NULL);
 }
 
 void free_history_lists(void)
